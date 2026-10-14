@@ -27,6 +27,14 @@ import {
 
 import { bolivianDay } from "./dates.ts"
 import {
+  cashPayment,
+  paymentError,
+  type PaymentMode,
+  type DetallePago,
+  type PaymentNotification,
+  type SalePaymentDraft,
+} from "./payments.ts"
+import {
   applyInventoryTransfer,
   type InventoryTransferDraft,
   type TransferFeedback,
@@ -48,6 +56,10 @@ export interface SaleDraftRow {
 }
 
 export interface Venta {
+  tipoPagoId: PaymentMode
+  detallePago: DetallePago
+  origenPago: "efectivo" | "notificacion" | "manual" | "historico"
+  notificacionPago?: PaymentNotification
   id: number
 
   fecha: string
@@ -304,6 +316,7 @@ export function registerSale(
   fecha = new Date().toISOString(),
 
   cashier: Pick<typeof cuenta, "id" | "nombre"> = cuenta,
+  payment?: SalePaymentDraft,
 ): POSState {
   const prepared = prepareSale(state.inventario, draft, fecha)
 
@@ -311,6 +324,17 @@ export function registerSale(
     throw new Error(
       prepared.error || "Revisa las cantidades y el stock vendible.",
     )
+
+  const appliedPayment = payment ?? cashPayment(prepared.total)
+  const issue = paymentError(appliedPayment, prepared.total)
+  if (issue) throw new Error(issue)
+  if (
+    appliedPayment.notificacion &&
+    state.ventas.some(
+      (sale) => sale.notificacionPago?.id === appliedPayment.notificacion?.id,
+    )
+  )
+    throw new Error("Esta notificación ya fue utilizada en una venta.")
 
   const id =
     state.ventas.reduce((maximum, item) => Math.max(maximum, item.id), 0) + 1
@@ -355,6 +379,16 @@ export function registerSale(
   }
 
   const venta: Venta = {
+    tipoPagoId: appliedPayment.tipoPagoId,
+    detallePago: { ...appliedPayment.detallePago },
+    origenPago: appliedPayment.notificacion
+      ? "notificacion"
+      : appliedPayment.manual
+        ? "manual"
+        : "efectivo",
+    ...(appliedPayment.notificacion
+      ? { notificacionPago: { ...appliedPayment.notificacion } }
+      : {}),
     id,
 
     fecha,
@@ -409,12 +443,33 @@ export function createPOSState(referenceDay = bolivianDay()): POSState {
 
       new Date(lastPurchase + (index + 1) * 60000).toISOString(),
     )
+    const latest = state.ventas[0]
+    const tipoPagoId = ((index % 3) + 1) as PaymentMode
+    const qr =
+      tipoPagoId === 1
+        ? latest.monto
+        : tipoPagoId === 2
+          ? Math.floor(latest.monto / 2)
+          : 0
+    state = {
+      ...state,
+      ventas: [
+        {
+          ...latest,
+          tipoPagoId,
+          origenPago: "historico",
+          detallePago: { monto_qr: qr, monto_efectivo: latest.monto - qr },
+        },
+        ...state.ventas.slice(1),
+      ],
+    }
   }
 
   return state
 }
 
 export interface POSAppState extends POSState {
+  saleConfirming: boolean
   transferFeedback: TransferFeedback
   adjustmentFeedback: AdjustmentFeedback
   purchaseFeedback: PurchaseFeedback
@@ -428,6 +483,15 @@ export interface POSAppState extends POSState {
 }
 
 export type POSAction = {
+  type: "sale/beginConfirm"
+} | {
+  type: "sale/confirmError"
+  error: string
+} | {
+  type: "sale/commitPrepared"
+  base: POSState
+  next: POSState
+} | {
   type: "inventory/transfer"
   draft: InventoryTransferDraft
   fecha: string
@@ -446,6 +510,7 @@ export type POSAction = {
   type: "sale/register"
 
   draft: SaleDraftRow[]
+  payment?: SalePaymentDraft
 
   fecha: string
 } | {
@@ -495,6 +560,7 @@ export function createPOSAppState(referenceDay = bolivianDay()): POSAppState {
     adjustmentFeedback: { intento: 0, ajusteId: null, error: "" },
 
     saleOpen: false,
+    saleConfirming: false,
 
     saleError: "",
 
@@ -505,7 +571,41 @@ export function createPOSAppState(referenceDay = bolivianDay()): POSAppState {
 }
 
 export function posReducer(state: POSAppState, action: POSAction): POSAppState {
+  if (
+    state.saleConfirming &&
+    action.type !== "sale/commitPrepared" &&
+    action.type !== "sale/confirmError"
+  )
+    return state
   switch (action.type) {
+    case "sale/beginConfirm":
+      return state.saleOpen
+        ? { ...state, saleConfirming: true, saleError: "" }
+        : state
+    case "sale/confirmError":
+      return { ...state, saleConfirming: false, saleError: action.error }
+    case "sale/commitPrepared":
+      if (!state.saleOpen || !state.saleConfirming) return state
+      if (
+        state.inventario !== action.base.inventario ||
+        state.ventas !== action.base.ventas ||
+        state.detallesVenta !== action.base.detallesVenta
+      )
+        return {
+          ...state,
+          saleConfirming: false,
+          saleError:
+            "El inventario cambió. Revisa la venta antes de confirmar.",
+        }
+      return {
+        ...state,
+        ...action.next,
+        saleOpen: false,
+        saleConfirming: false,
+        saleError: "",
+        saleSequence: state.saleSequence + 1,
+        saleNotice: `Venta V-${action.next.ventas[0].id} registrada correctamente.`,
+      }
     case "inventory/transfer": {
       const intento = state.transferFeedback.intento + 1
       try {
@@ -593,7 +693,13 @@ export function posReducer(state: POSAppState, action: POSAction): POSAppState {
       if (!state.saleOpen) return state
 
       try {
-        const next = registerSale(state, action.draft, action.fecha)
+        const next = registerSale(
+          state,
+          action.draft,
+          action.fecha,
+          undefined,
+          action.payment,
+        )
 
         return {
           ...state,

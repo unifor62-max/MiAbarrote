@@ -1,0 +1,25 @@
+# MiAbarrote
+
+Aplicación React + TypeScript para inventario, compras y ventas. Incluye pagos QR, híbridos y efectivo, recepción de notificaciones por MacroDroid y funciones para Vercel y Netlify.
+
+## Ejecutar y verificar
+
+Requiere Node.js 22.12 o superior dentro de la rama 22.
+
+```sh
+npm ci
+npm run dev
+npm test
+npm run typecheck
+npm run build
+```
+
+El modo inicial es demostración. Las ventas e inventario se mantienen en memoria y se reinician al recargar.
+
+## Vercel y Yape Bolivia
+
+La raíz del proyecto es esta carpeta. `vercel.json` fija instalación con `npm ci`, compilación Vite, salida `dist` y navegación SPA sin interceptar `/api/`. Las funciones requieren variables privadas de servidor y Upstash Redis.
+
+Sigue la [guía paso a paso](docs/configurar-yape-vercel-macrodroid.md) o descarga el [PDF](output/pdf/Guia-MacroDroid-Vercel-MiAbarrote.pdf). La guía diferencia el ejemplo de notificación del formato real de Yape que debes comprobar en tu teléfono.
+
+Consulta también el [contrato técnico de pagos](docs/pagos-macrodroid.md). Copia únicamente los nombres de variables de `.env.example`: nunca publiques claves ni archivos `.env.local`.

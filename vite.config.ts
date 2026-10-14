@@ -1,4 +1,5 @@
-import { defineConfig, type HtmlTagDescriptor, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type HtmlTagDescriptor, type Plugin } from 'vite'
+import { paymentDevPlugin } from './server/paymentDevPlugin.ts'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
@@ -19,6 +20,7 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
 react(),
+      paymentDevPlugin({ ...process.env, ...loadEnv(mode, process.cwd(), '') }),
       tailwindcss(),
       figmaSiteConfiguration(siteConfiguration),
       figmaErrorOverlayReplay(),

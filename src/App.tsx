@@ -1,5 +1,5 @@
 import DiscardEditsModal from "./features/purchases/DiscardEditsModal"
-import { useCallback, useReducer, useState } from "react"
+import { useCallback, useEffect, useReducer, useRef, useState } from "react"
 import Icon from "./components/Icon"
 import Login from "./features/auth/Login"
 import SaleModal from "./features/sales/SaleModal"
@@ -11,12 +11,62 @@ import Purchases from "./pages/Purchases"
 import Sales from "./pages/Sales"
 import Reports from "./pages/Reports"
 import SupplierToast from "./features/purchases/SupplierToast"
-import { createPOSAppState, posReducer } from "./data/sales"
+import {
+  createPOSAppState,
+  posReducer,
+  registerSale,
+  type SaleDraftRow,
+} from "./data/sales"
+import type { SalePaymentDraft } from "./data/payments"
+import PaymentNotifications from "./features/payments/PaymentNotifications"
+import { getPaymentListener } from "./features/payments/PaymentWebhookListener"
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [active, setActive] = useState("Inicio")
   const [menuOpen, setMenuOpen] = useState(false)
   const [pos, dispatch] = useReducer(posReducer, undefined, createPOSAppState)
+  const posRef = useRef(pos)
+  posRef.current = pos
+  const confirming = useRef(false)
+  useEffect(() => {
+    const listener = getPaymentListener()
+    if (isAuthenticated) listener.start()
+    return () => listener.stop()
+  }, [isAuthenticated])
+  async function sell(
+    draft: SaleDraftRow[],
+    payment: SalePaymentDraft,
+    owner: string,
+    commitId: string,
+  ) {
+    if (confirming.current || !posRef.current.saleOpen)
+      throw new Error("Ya se está procesando esta venta.")
+    confirming.current = true
+    try {
+      const base = posRef.current
+      const next = registerSale(
+        base,
+        draft,
+        new Date().toISOString(),
+        undefined,
+        payment,
+      )
+      dispatch({ type: "sale/beginConfirm" })
+      if (payment.notificacion)
+        await getPaymentListener().transition(
+          payment.notificacion,
+          "consume",
+          owner,
+          commitId,
+        )
+      dispatch({ type: "sale/commitPrepared", base, next })
+    } catch (error) {
+      dispatch({ type: "sale/confirmError", error: "" })
+      throw error
+    } finally {
+      confirming.current = false
+    }
+  }
   const closeSaleNotice = useCallback(
     () => dispatch({ type: "sale/clearNotice" }),
     [],
@@ -46,6 +96,7 @@ export default function App() {
   }
   return (
     <div className="min-h-screen bg-[#f8faf4] font-sans text-[#23342e]">
+      <PaymentNotifications />
       <Sidebar
         active={active}
         setActive={navigate}
@@ -166,13 +217,7 @@ export default function App() {
           inventario={pos.inventario}
           error={pos.saleError}
           onClose={() => dispatch({ type: "sale/close" })}
-          onSell={(draft) =>
-            dispatch({
-              type: "sale/register",
-              draft,
-              fecha: new Date().toISOString(),
-            })
-          }
+          onSell={sell}
         />
       )}
     </div>

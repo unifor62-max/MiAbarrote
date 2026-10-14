@@ -466,6 +466,44 @@ button:disabled {
   .inventory-location-card:hover { transform: none; }
 }
 /* Compact transaction history and its receipt table. */
+/* Payments keep the bank notification separate from the cashier's confirmation. */
+.sale-editable-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.sale-payment-modes { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; margin: 0 0 24px; border: 0; }
+.sale-payment-modes legend { margin-bottom: 10px; color: var(--purchase-muted); font-size: 12px; font-weight: 600; }
+.sale-payment-mode { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1 1 110px; min-height: 46px; padding: 10px 16px; border: 1px solid var(--purchase-border); border-radius: 12px; color: var(--brand-green); background: var(--brand-surface); font-size: 13px; font-weight: 600; cursor: pointer; }
+.sale-payment-mode.is-selected { border-color: #7bab89; background: #eef6ef; box-shadow: inset 0 0 0 1px #7bab89; }
+.sale-payment-mode input { accent-color: var(--brand-green); width: 16px; height: 16px; }
+.sale-payment-mode:focus-within { outline: 2px solid var(--brand-green-secondary); outline-offset: 3px; }
+.sale-payment-panel { margin-top: 24px; padding: 20px; border: 1px solid #dce9df; border-radius: 16px; background: #f4f8f4; }
+.sale-payment-panel-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; font-size: 13px; }
+.sale-payment-panel-heading .stock-edit-button { margin: 0; }
+.sale-payment-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.sale-payment-fields input { font-variant-numeric: tabular-nums; font-size: 18px; font-weight: 600; }
+.sale-payment-fields input:disabled { opacity: 1; color: #496457; background: #eaf0eb; }
+.sale-payment-help, .sale-payment-validation { margin-top: 12px; font-size: 12px; line-height: 1.7; color: var(--purchase-muted); overflow-wrap: anywhere; }
+.sale-payment-validation { color: #96500c; }
+.sale-simulate-button { margin-top: 12px; padding: 7px 10px; border: 1px dashed #a9beaf; border-radius: 8px; font-size: 11px; color: #496457; }
+.sale-simulate-button:disabled { opacity: .5; }
+.sale-editable-fields:disabled .sale-payment-mode { cursor: wait; opacity: .7; }
+.payment-connection { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.payment-connection-status { color: var(--purchase-muted); font-size: 12px; overflow-wrap: anywhere; }
+.payment-toast { display: none; position: fixed; inset: 20px 20px auto auto; margin: 0; width: min(370px, calc(100vw - 32px)); padding: 18px; border: 1px solid rgb(149 190 162 / 65%); border-radius: 18px; color: var(--brand-green); background: rgb(247 253 249 / 96%); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); box-shadow: 0 16px 48px rgb(2 63 34 / 20%); gap: 12px; align-items: flex-start; }
+.payment-toast:popover-open { display: flex; }
+.payment-toast::backdrop { background: transparent; pointer-events: none; }
+.payment-toast-icon { display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; border-radius: 11px; background: #e4f1e7; }
+.payment-toast > div { display: grid; gap: 6px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.payment-toast-eyebrow { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #587966; }
+.payment-toast strong { font-size: 14px; }
+.payment-toast-amount { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.payment-toast > button { padding: 6px; border-radius: 7px; }
+.payment-toast > button:hover { background: #e5efe7; }
+.payment-toast-pending { position: absolute; right: 18px; bottom: 15px; font-size: 10px; color: #587966; }
+@media (max-width: 450px) {
+  .sale-payment-panel { padding: 14px; }
+  .sale-payment-fields { grid-template-columns: minmax(0, 1fr); }
+  .payment-toast { inset: 12px 12px auto auto; }
+}
+
 .purchase-history-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
 .purchase-history-heading h2 { font-size: 24px; font-weight: 700; letter-spacing: -.025em; }
 .purchase-history-heading .purchase-description { margin-top: 3px; }

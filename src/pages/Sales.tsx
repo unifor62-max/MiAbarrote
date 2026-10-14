@@ -4,6 +4,8 @@ import { formatMoney } from "../data/purchases"
 import { formatSaleDate, type POSState } from "../data/sales"
 import ModalShell from "../features/purchases/ModalShell"
 import { paginateRows } from "../features/purchases/purchaseDetails"
+import { tiposPago } from "../data/payments"
+import PaymentConnection from "../features/payments/PaymentConnection"
 
 export default function Sales({
   state,
@@ -64,6 +66,7 @@ export default function Sales({
           <Icon name="plus" className="size-4" /> Registrar venta
         </button>
       </header>
+      <PaymentConnection />
       <section
         className="purchase-workspace details-workspace"
         aria-label="Historial de ventas"
@@ -173,6 +176,43 @@ export default function Sales({
               <dt>Cajer@</dt>
               <dd>{venta.cajeroNombre}</dd>
             </div>
+            <div>
+              <dt>Método de pago</dt>
+              <dd>
+                {tiposPago.find((item) => item.id === venta.tipoPagoId)?.nombre}
+              </dd>
+            </div>
+            <div>
+              <dt>QR</dt>
+              <dd>{formatMoney(venta.detallePago.monto_qr)}</dd>
+            </div>
+            <div>
+              <dt>Efectivo</dt>
+              <dd>{formatMoney(venta.detallePago.monto_efectivo)}</dd>
+            </div>
+            {venta.notificacionPago && (
+              <div>
+                <dt>Titular del pago QR</dt>
+                <dd>
+                  {venta.notificacionPago.titular}
+                  {venta.notificacionPago.source === "demo"
+                    ? " · Simulado"
+                    : ""}
+                </dd>
+              </div>
+            )}
+            {venta.origenPago === "manual" && (
+              <div>
+                <dt>Origen del desglose</dt>
+                <dd>Registro manual de contingencia</dd>
+              </div>
+            )}
+            {venta.origenPago === "historico" && (
+              <div>
+                <dt>Origen del desglose</dt>
+                <dd>Datos históricos de demostración</dd>
+              </div>
+            )}
           </dl>
           <div className="sale-table-wrap">
             <table className="sale-receipt-table">
