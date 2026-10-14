@@ -11,6 +11,7 @@
       "@/*": ["./src/*"]
     },
     "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
