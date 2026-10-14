@@ -1,0 +1,10 @@
+{
+  "description": "Manage sales, purchases, and inventory efficiently with real-time reporting and alerts, enhancing operational insights for grocery stores.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
