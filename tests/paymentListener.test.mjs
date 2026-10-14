@@ -21,6 +21,28 @@ const cloudEvent = {
   sequence: 1,
 }
 
+test("native fetch keeps its global receiver for connection, polling and reservations; pasted keys trim outer whitespace", async (t) => {
+  const requests = []
+  t.mock.method(globalThis, "fetch", async function (path, options) {
+    assert.equal(this, globalThis, "Native browser fetch rejects a listener instance as receiver")
+    requests.push({ path, options })
+    return Response.json({ ok: true, serverNow: Date.now(), cursor: 0, events: [] })
+  })
+  const listener = new PaymentWebhookListener({ mode: "cloud", target: new EventTarget() })
+  try {
+    await listener.connect("  clave-copiada-desde-bloc-de-notas\r\n")
+    assert.deepEqual(JSON.parse(requests[0].options.body), { clave: "clave-copiada-desde-bloc-de-notas" })
+    assert.equal(requests[0].options.credentials, "same-origin")
+    listener.start()
+    await pause()
+    assert.equal(listener.getStatus().connected, true)
+    await listener.transition(cloudEvent, "reserve", "sale-owner")
+    assert.deepEqual(requests.map(({ path }) => path), ["/api/pagos-sesion", "/api/webhook-pago", "/api/pagos-estado"])
+  } finally {
+    listener.stop()
+  }
+})
+
 test("demo delivers custom events once, validates payloads and cleans up listeners", () => {
   const options = demoOptions()
   const listener = new PaymentWebhookListener(options)

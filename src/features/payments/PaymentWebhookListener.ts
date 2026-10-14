@@ -49,7 +49,8 @@ export class PaymentWebhookListener {
     this.options = options
     this.mode = options.mode
     this.target = options.target ?? window
-    this.fetcher = options.fetcher ?? fetch
+    // Window.fetch must keep its native receiver when called from this instance.
+    this.fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis)
     this.status = {
       connected: this.mode === "demo",
       message:
@@ -181,7 +182,7 @@ export class PaymentWebhookListener {
   }
   async connect(clave: string) {
     if (this.mode === "demo") return
-    const data = await this.request("/api/pagos-sesion", { clave })
+    const data = await this.request("/api/pagos-sesion", { clave: clave.trim() })
     this.offset = data.serverNow - Date.now()
     this.delay = 2000
     this.setStatus({
