@@ -15,6 +15,32 @@ const config = {
   sessionSecret: "session-test-key-".repeat(3),
 }
 const origin = "https://shop.example"
+
+test("prototype session needs no cashier key, preserves valid sessions and still rejects other origins and unsigned webhooks", async () => {
+  const store = new MemoryPaymentStore()
+  const api = createPaymentApi({ ...config, readerKey: "", automaticSession: true }, store)
+  const makeRequest = (headers = {}) => new Request(origin + "/api/pagos-sesion", {
+    method: "POST", headers: { Origin: origin, "Content-Type": "application/json", ...headers }, body: "{}",
+  })
+  assert.equal((await api(makeRequest({ Origin: "https://other.example" }), "pagos-sesion")).status, 403)
+  const response = await api(makeRequest(), "pagos-sesion")
+  assert.equal(response.status, 200)
+  const cookie = response.headers.get("set-cookie")
+  assert.ok(cookie.includes("HttpOnly; Secure; SameSite=Strict"))
+  const renewed = await api(makeRequest({ Cookie: cookie }), "pagos-sesion")
+  const sessionId = value => JSON.parse(Buffer.from(value.split("=")[1].split(".")[0], "base64url").toString()).id
+  assert.equal(sessionId(cookie), sessionId(renewed.headers.get("set-cookie")))
+  const unsigned = await api(new Request(origin + "/api/webhook-pago", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), "webhook-pago")
+  assert.equal(unsigned.status, 401)
+})
+
+test("environment adapter enables automatic sessions without PAYMENT_READER_KEY", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({ result: 1 }))
+  const api = paymentApiFromEnv({ UPSTASH_REDIS_REST_URL: "https://redis.example", UPSTASH_REDIS_REST_TOKEN: "test-token", PAYMENT_WEBHOOK_KEY: config.webhookKey, PAYMENT_SESSION_SECRET: config.sessionSecret })
+  const response = await api(new Request(origin + "/api/pagos-sesion", { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: "{}" }), "pagos-sesion")
+  assert.equal(response.status, 200)
+  assert.equal((await response.json()).connected, true)
+})
 const payload = {
   titular: "Ana Pérez",
   monto: 150.5,

@@ -1,6 +1,8 @@
 # MiAbarrote: Yape, Vercel y MacroDroid
 
-Guía de puesta en marcha | 14 de octubre de 2026
+Guía de puesta en marcha | Actualizada el 15 de octubre de 2026
+
+**Conexión automática:** el prototipo ya no pide clave de caja. Espera el mensaje «Caja conectada» en Ventas antes de probar el cobro. El PDF anterior conserva instrucciones de la conexión manual; esta versión Markdown describe el flujo vigente.
 
 Sitio indicado: https://mi-abarrote.vercel.app/
 
@@ -22,7 +24,7 @@ El ejemplo facilitado fue «Eduardo David Lucas Choque 230Bs o algo así». Yape
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-4. Asigna una clave a cada propósito. `PAYMENT_WEBHOOK_KEY` irá al teléfono; `PAYMENT_READER_KEY` la introduce el cajero; `PAYMENT_SESSION_SECRET` se queda exclusivamente en Vercel. No uses el PIN de Yape como ninguna de estas claves.
+4. Asigna una clave a cada propósito. `PAYMENT_WEBHOOK_KEY` irá al teléfono; `PAYMENT_READER_KEY` ya no se utiliza en este prototipo; `PAYMENT_SESSION_SECRET` se queda exclusivamente en Vercel. No uses el PIN de Yape como ninguna de estas claves.
 5. Reserva el nombre `miabarrote-produccion` para `PAYMENT_NAMESPACE`. Si usas despliegues Preview, dales otro nombre y otras credenciales para que las pruebas no compartan cobros con producción.
 
 Redis conserva las notificaciones y sus asociaciones durante 24 horas. La reserva de una notificación dura cinco minutos y se renueva mientras el modal permanece abierto. El teléfono y la caja deben tener internet.
@@ -43,7 +45,7 @@ Fuente técnica: https://upstash.com/docs/redis/features/restapi
 | UPSTASH_REDIS_REST_URL | URL REST HTTPS de tu base |
 | UPSTASH_REDIS_REST_TOKEN | Token REST de lectura y escritura |
 | PAYMENT_WEBHOOK_KEY | Primera clave aleatoria |
-| PAYMENT_READER_KEY | Segunda clave aleatoria |
+| PAYMENT_READER_KEY | No necesaria; puede dejarse sin configurar |
 | PAYMENT_SESSION_SECRET | Tercera clave aleatoria |
 | PAYMENT_NAMESPACE | miabarrote-produccion |
 
@@ -60,8 +62,8 @@ Fuentes: https://vercel.com/docs/environment-variables/managing-environment-vari
 ## 3. Conectar la caja y comprobar las rutas
 
 1. Abre https://mi-abarrote.vercel.app/ en el navegador de la caja e inicia la sesión demostrativa de la aplicación.
-2. En Ventas pulsa **Conectar pagos**. Introduce el valor de `PAYMENT_READER_KEY`, no la clave del teléfono. Espera el estado de conexión.
-3. La conexión dura ocho horas y se guarda mediante una cookie segura. Si expira o cambias de navegador, vuelve a conectar. Usa una sola caja en esta fase.
+2. En Ventas espera el estado **Caja conectada · esperando pagos**. La conexión es automática y no solicita ninguna clave.
+3. La sesión dura ocho horas y se guarda mediante una cookie segura. Al expirar se renueva automáticamente; las reconexiones conservan el cursor. Usa una sola caja en esta fase.
 4. Abre Registrar venta, selecciona productos y entra en el paso 2. Selecciona **QR**. Anota el total exacto en bolivianos: lo usarás en la prueba del teléfono.
 
 Las funciones publicadas son `/api/webhook-pago`, `/api/pagos-sesion` y `/api/pagos-estado`. No hay que añadir un servidor Express, configurar CORS abierto ni instalar Redis en el teléfono.
@@ -170,7 +172,7 @@ Referencia de estas funciones de MacroDroid: https://www.macrodroidforum.com/ind
 | Síntoma | Revisión |
 |---|---|
 | 400 | JSON inválido, monto como texto, titular vacío o timestamp sin zona |
-| 401 | Bearer/clave webhook incorrectos; o sesión de caja vencida |
+| 401 | Bearer/clave webhook incorrectos; la sesión de caja se renueva automáticamente |
 | 409 | Mismo ID con datos diferentes o reserva no disponible |
 | 429 | Límite de intentos; esperar el Retry-After |
 | 503 | Variables privadas/configuración o Redis no disponible; revisar logs de Vercel |

@@ -14,6 +14,7 @@ export interface PaymentConfig {
   webhookKey: string
   readerKey: string
   sessionSecret: string
+  automaticSession?: boolean
 }
 export type PaymentRoute = "webhook-pago" | "pagos-sesion" | "pagos-estado"
 const sessionSeconds = 8 * 60 * 60
@@ -113,13 +114,14 @@ export function createPaymentApi(
     clientIp = "unknown",
   ): Promise<Response> {
     try {
+      const requiredKeys = config.automaticSession
+        ? [config.webhookKey, config.sessionSecret]
+        : [config.webhookKey, config.readerKey, config.sessionSecret]
       if (
-        [config.webhookKey, config.readerKey, config.sessionSecret].some(
+        requiredKeys.some(
           (key) => key.length < 32,
         ) ||
-        new Set(
-          [config.webhookKey, config.readerKey, config.sessionSecret].map(hash),
-        ).size !== 3
+        new Set(requiredKeys.map(hash)).size !== requiredKeys.length
       )
         return json(
           { error: "Configura las claves privadas de pagos en el servidor." },
@@ -135,8 +137,8 @@ export function createPaymentApi(
         if (request.headers.get("origin") !== new URL(request.url).origin)
           return json({ error: "Origen no autorizado." }, 403)
         if (
-          !(await store.limit("auth-global", 60, 600)) ||
-          !(await store.limit("auth-" + hash(clientIp), 10, 600))
+          !(await store.limit(config.automaticSession ? "auto-session-global" : "auth-global", config.automaticSession ? 300 : 60, 600)) ||
+          !(await store.limit((config.automaticSession ? "auto-session-" : "auth-") + hash(clientIp), config.automaticSession ? 60 : 10, 600))
         )
           return json(
             {
@@ -147,13 +149,14 @@ export function createPaymentApi(
           )
         const data = await readBody(request)
         if (
-          typeof data.clave !== "string" ||
-          !equal(data.clave, config.readerKey)
+          !config.automaticSession &&
+          (typeof data.clave !== "string" ||
+          !equal(data.clave, config.readerKey))
         )
           return json({ error: "Clave de caja incorrecta." }, 401)
         const value = Buffer.from(
           JSON.stringify({
-            id: randomUUID(),
+            id: session(request) ?? randomUUID(),
             exp: clock() + sessionSeconds * 1000,
           }),
         ).toString("base64url")
@@ -306,6 +309,7 @@ export function paymentApiFromEnv(
       webhookKey: env.PAYMENT_WEBHOOK_KEY ?? "",
       readerKey: env.PAYMENT_READER_KEY ?? "",
       sessionSecret: env.PAYMENT_SESSION_SECRET ?? "",
+      automaticSession: true,
     },
     store,
   )

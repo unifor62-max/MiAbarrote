@@ -20,6 +20,6 @@ El modo inicial es demostración. Las ventas e inventario se mantienen en memori
 
 La raíz del proyecto es esta carpeta. `vercel.json` fija instalación con `npm ci`, compilación Vite, salida `dist` y navegación SPA sin interceptar `/api/`. Las funciones requieren variables privadas de servidor y Upstash Redis.
 
-Sigue la [guía paso a paso](docs/configurar-yape-vercel-macrodroid.md) o descarga el [PDF](output/pdf/Guia-MacroDroid-Vercel-MiAbarrote.pdf). La guía diferencia el ejemplo de notificación del formato real de Yape que debes comprobar en tu teléfono.
+Los pagos se conectan automáticamente, sin clave de caja. Sigue la [guía paso a paso actualizada](docs/configurar-yape-vercel-macrodroid.md). El [PDF original](output/pdf/Guia-MacroDroid-Vercel-MiAbarrote.pdf) conserva pasos de conexión manual que ya no son necesarios. La guía diferencia el ejemplo de notificación del formato real de Yape que debes comprobar en tu teléfono.
 
 Consulta también el [contrato técnico de pagos](docs/pagos-macrodroid.md). Copia únicamente los nombres de variables de `.env.example`: nunca publiques claves ni archivos `.env.local`.

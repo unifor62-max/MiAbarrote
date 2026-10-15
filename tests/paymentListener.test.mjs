@@ -2,6 +2,8 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { PaymentWebhookListener } from "../src/features/payments/PaymentWebhookListener.ts"
 import { MemoryStorage } from "./helpers/paymentStore.mjs"
+import { MemoryPaymentStore } from "./helpers/paymentStore.mjs"
+import { createPaymentApi } from "../server/paymentApi.ts"
 
 const pause = () => new Promise((resolve) => setImmediate(resolve))
 const demoOptions = () => ({
@@ -20,6 +22,100 @@ const cloudEvent = {
   source: "cloud",
   sequence: 1,
 }
+
+test("automatic connection creates its session without a key and renews after expiry without losing new payments", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let now = Date.now()
+  let cookie = ""
+  const calls = []
+  const store = new MemoryPaymentStore()
+  const api = createPaymentApi({ webhookKey: "webhook-key-".repeat(4), readerKey: "", sessionSecret: "session-key-".repeat(4), automaticSession: true }, store, () => now)
+  const listener = new PaymentWebhookListener({
+    mode: "cloud", autoConnect: true, target: new EventTarget(),
+    fetcher: async (path, options) => {
+      calls.push(path)
+      const headers = new Headers(options.headers)
+      headers.set("Origin", "https://shop.example")
+      if (cookie) headers.set("Cookie", cookie)
+      const response = await api(new Request("https://shop.example" + path, { ...options, headers }), path.split("?")[0].slice(5))
+      if (response.headers.has("set-cookie")) cookie = response.headers.get("set-cookie").split(";")[0]
+      return response
+    },
+  })
+  const received = []
+  listener.subscribe(event => received.push(event))
+  try {
+    listener.start()
+    for (let i = 0; i < 5; i++) await pause()
+    assert.equal(listener.getStatus().connected, true)
+    assert.equal(calls.filter(path => path === "/api/pagos-sesion").length, 1)
+    now += 8 * 60 * 60 * 1000 + 1
+    await store.insert({ ...cloudEvent, receivedAt: now, timestamp: new Date(now).toISOString() }, "fingerprint")
+    t.mock.timers.tick(2000)
+    for (let i = 0; i < 5; i++) await pause()
+    assert.equal(calls.filter(path => path === "/api/pagos-sesion").length, 2)
+    assert.equal(listener.getStatus().connected, true)
+    assert.equal(received.length, 1)
+    assert.equal(received[0].montoCentavos, 15050)
+    await listener.transition(received[0], "reserve", "automatic-owner-123456")
+    await listener.transition(received[0], "consume", "automatic-owner-123456", "automatic-commit-123456")
+    assert.equal(store.records.get(cloudEvent.id).consumed, true)
+  } finally { listener.stop() }
+})
+
+test("failed automatic sessions back off instead of spinning and stopping cancels further retries", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let calls = 0
+  const listener = new PaymentWebhookListener({
+    mode: "cloud", autoConnect: true, target: new EventTarget(),
+    fetcher: async path => {
+      calls++
+      return path === "/api/pagos-sesion"
+        ? Response.json({ serverNow: Date.now() })
+        : Response.json({ error: "Session unavailable" }, { status: 401 })
+    },
+  })
+  listener.start()
+  await pause()
+  assert.equal(calls, 3)
+  assert.equal(listener.getStatus().connected, false)
+  t.mock.timers.tick(3999)
+  await pause()
+  assert.equal(calls, 3)
+  t.mock.timers.tick(1)
+  await pause()
+  assert.equal(calls, 6)
+  listener.stop()
+  t.mock.timers.tick(30000)
+  await pause()
+  assert.equal(calls, 6)
+})
+
+test("stopping during automatic session setup discards its late response", async () => {
+  let finish
+  let sessionSignal
+  let calls = 0
+  const listener = new PaymentWebhookListener({
+    mode: "cloud", autoConnect: true, target: new EventTarget(),
+    fetcher: async (path, options) => {
+      calls++
+      if (path === "/api/pagos-sesion") {
+        sessionSignal = options.signal
+        return new Promise(resolve => { finish = resolve })
+      }
+      return Response.json({ error: "No session" }, { status: 401 })
+    },
+  })
+  listener.start()
+  await pause()
+  assert.equal(calls, 2)
+  listener.stop()
+  assert.equal(sessionSignal.aborted, true)
+  finish(Response.json({ serverNow: Date.now() }))
+  await pause()
+  assert.equal(calls, 2)
+  assert.equal(listener.getStatus().connected, false)
+})
 
 test("native fetch keeps its global receiver for connection, polling and reservations; pasted keys trim outer whitespace", async (t) => {
   const requests = []

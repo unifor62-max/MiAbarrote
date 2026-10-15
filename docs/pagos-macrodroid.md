@@ -27,7 +27,7 @@ Prepara una base Upstash Redis existente y configura estas variables en el hosti
 | `UPSTASH_REDIS_REST_URL` | URL HTTPS REST de Redis. Solo servidor. |
 | `UPSTASH_REDIS_REST_TOKEN` | Token Redis con permisos de lectura y escritura. Solo servidor. |
 | `PAYMENT_WEBHOOK_KEY` | Clave aleatoria para MacroDroid, de al menos 32 caracteres. |
-| `PAYMENT_READER_KEY` | Otra clave aleatoria, de al menos 32 caracteres, para Conectar pagos. |
+| `PAYMENT_READER_KEY` | Ya no se utiliza en la conexión automática del prototipo. Puede eliminarse del entorno. |
 | `PAYMENT_SESSION_SECRET` | Clave aleatoria distinta, de al menos 32 caracteres, para firmar sesiones. |
 | `PAYMENT_NAMESPACE` | Prefijo exclusivo para este entorno, por ejemplo `miabarrote-produccion`. Separa producción y previews. |
 
@@ -45,9 +45,11 @@ Las dos plataformas comparten los handlers de `server/`. Redis se accede mediant
 
 ### Conectar la caja
 
-En Ventas, pulsa **Conectar pagos** e introduce `PAYMENT_READER_KEY`. El servidor crea una cookie firmada, HttpOnly, Secure, SameSite=Strict y con ocho horas de vigencia. La clave no se guarda en almacenamiento del navegador. El login general continúa siendo demostrativo.
+El prototipo conecta pagos automáticamente al abrir la aplicación autenticada. Ya no hay formulario ni clave de caja. El servidor emite una cookie firmada, HttpOnly, Secure, SameSite=Strict y con ocho horas de vigencia, que el listener renueva automáticamente cuando expira. El estado se muestra en Ventas. El login general continúa siendo demostrativo.
 
-La primera consulta establece el punto de inicio y no recupera transferencias anteriores a la conexión. Después, el listener consulta cada dos segundos, conserva su cursor durante fallos de red y reintenta hasta cada 30 segundos. Si la sesión expira, vuelve a conectar. Las consultas son de un mismo origen y no permiten CORS abierto.
+Por decisión del equipo, cualquier visitante que acceda al prototipo puede obtener esta sesión y consultar/asociar notificaciones. La cookie mantiene la identidad de las reservas, pero no restringe el acceso al equipo. El endpoint de sesión comprueba el origen y limita solicitudes; el POST de MacroDroid sigue exigiendo `PAYMENT_WEBHOOK_KEY`. No hay secretos de servidor en el frontend.
+
+La primera consulta establece el punto de inicio y no recupera transferencias anteriores a la conexión. Después, el listener consulta cada dos segundos, conserva su cursor durante fallos de red y reintenta hasta cada 30 segundos. Si la sesión expira, se renueva automáticamente sin descartar el cursor; los errores de red se reintentan con espera progresiva. Las consultas son de un mismo origen y no permiten CORS abierto.
 
 ## Configurar HTTP Request en MacroDroid
 
@@ -97,7 +99,7 @@ El webhook acredita que MacroDroid envió una notificación; no verifica la tran
 
 - Ejecuta `npm test`, `npm run typecheck` y `npm run build`.
 - Abre `/tests/payments.browser.html` para verificar wizard, pagos, cancelación y comprobantes.
-- En el despliegue configurado, conecta la caja, deja el paso 2 abierto y envía un POST real con un monto incorrecto y después uno correcto.
+- En el despliegue configurado, espera el estado de caja conectada, deja el paso 2 abierto y envía un POST real con un monto incorrecto y después uno correcto.
 - Prueba reenvío del mismo ID y segundo pago: un pago consumido no puede aplicarse a una nueva venta.
 - Nunca añadas claves, titulares reales o payloads bancarios a logs o al repositorio.
 

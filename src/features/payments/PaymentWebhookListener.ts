@@ -10,6 +10,7 @@ export interface PaymentStatus {
 }
 type ListenerOptions = {
   mode: "demo" | "cloud"
+  autoConnect?: boolean
   fetcher?: typeof fetch
   target?: EventTarget
   storage?: Storage
@@ -56,7 +57,7 @@ export class PaymentWebhookListener {
       message:
         this.mode === "demo"
           ? "Simulador de pagos"
-          : "Conecta la caja para recibir pagos.",
+          : options.autoConnect ? "Conectando pagos…" : "Conecta la caja para recibir pagos.",
     }
   }
   now() {
@@ -163,7 +164,7 @@ export class PaymentWebhookListener {
     this.channel?.postMessage(event)
     return event.id
   }
-  private async request(path: string, body?: unknown) {
+  private async request(path: string, body?: unknown, signal?: AbortSignal) {
     const response = await this.fetcher(path, {
       method: body === undefined ? "GET" : "POST",
       credentials: "same-origin",
@@ -171,7 +172,7 @@ export class PaymentWebhookListener {
       headers:
         body === undefined ? undefined : { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(10000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000),
     })
     const data = await response.json()
     if (!response.ok)
@@ -200,7 +201,7 @@ export class PaymentWebhookListener {
     this.controller = new AbortController()
     const controller = this.controller
     try {
-      const response = await this.fetcher(
+      const fetchPayments = () => this.fetcher(
         `/api/webhook-pago${
           this.cursor === undefined ? "" : `?cursor=${this.cursor}`
         }`,
@@ -213,6 +214,13 @@ export class PaymentWebhookListener {
           ]),
         },
       )
+      let response = await fetchPayments()
+      if (!this.active || generation !== this.generation) return
+      if (response.status === 401 && this.options.autoConnect) {
+        await this.request("/api/pagos-sesion", {}, controller.signal)
+        if (!this.active || generation !== this.generation) return
+        response = await fetchPayments()
+      }
       const data = await response.json()
       if (!this.active || generation !== this.generation) return
       if (!response.ok) {
@@ -222,7 +230,7 @@ export class PaymentWebhookListener {
             message: data.error || "Reconecta los pagos.",
           })
           if (response.status === 409) this.cursor = undefined
-          return
+          if (!this.options.autoConnect) return
         }
         throw new Error(data.error || "No se pudo consultar el buzón de pagos.")
       }
@@ -331,5 +339,6 @@ let shared: PaymentWebhookListener | undefined
 export function getPaymentListener() {
   return (shared ??= new PaymentWebhookListener({
     mode: import.meta.env?.VITE_PAYMENT_MODE === "cloud" ? "cloud" : "demo",
+    autoConnect: true,
   }))
 }
