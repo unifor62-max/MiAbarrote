@@ -2,6 +2,10 @@ import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { validScannerCode, validScannerId } from "../src/data/remoteScanner.ts"
 import { RedisScannerStore, type ScannerStore } from "./scannerStore.ts"
 export type ScannerRoute = "lector-sesion" | "lector-eventos"
+interface TargetInput {
+  id?: unknown
+  kind?: unknown
+}
 const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 const validToken = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
@@ -96,7 +100,7 @@ export function createScannerApi(store: ScannerStore, clock = Date.now) {
         return json({ error: "Vinculación no autorizada." }, 401)
       const input: Record<string, unknown> = { ...common, token: hash(token) }
       if (op === "heartbeat" && route === "lector-sesion") {
-        const target = data.target as { id?: unknown kind?: unknown } | null
+        const target = data.target as TargetInput | null
         if (
           !Number.isSafeInteger(data.version) ||
           Number(data.version) < 0 ||

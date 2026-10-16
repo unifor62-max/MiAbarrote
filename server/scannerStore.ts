@@ -5,6 +5,11 @@ export interface ScannerStore {
   }>
 }
 
+interface RedisResult {
+  result?: string
+  error?: string
+}
+
 // A mailbox and its receipt hash share the session TTL and Redis cluster slot.
 export const scannerScript = `
 local op = ARGV[1]
@@ -134,7 +139,7 @@ export class RedisScannerStore implements ScannerStore {
       ]),
       signal: AbortSignal.timeout(8000),
     })
-    const data = (await response.json()) as { result?: string error?: string }
+    const data = (await response.json()) as RedisResult
     if (!response.ok || data.error || typeof data.result !== "string")
       throw new Error("Redis unavailable")
     return JSON.parse(data.result) as {
