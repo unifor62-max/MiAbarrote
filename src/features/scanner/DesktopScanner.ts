@@ -1,13 +1,23 @@
+import type { DataConnection, Peer } from "peerjs"
 import {
-  scannerRequest,
-  ScannerApiError,
+  desktopStorageKey,
+  SCANNER_LIFETIME,
+  scannerToken,
+  validCredentials,
+  validScan,
   type RemoteScan,
   type ScannerCredentials,
   type ScannerKind,
   type ScannerResult,
-  type ScannerState,
   type ScannerTarget,
 } from "../../data/remoteScanner.ts"
+import {
+  readPeerMessage,
+  scannerTransport,
+  sendPeerMessage,
+  type ScannerPeerFactory,
+} from "./PeerTransport.ts"
+
 type Consumer = {
   target: ScannerTarget
   read: (scan: RemoteScan) => ScannerResult
@@ -17,31 +27,47 @@ interface DesktopState {
   paired: boolean
   message: string
   url: string
-  pairUntil: number
+  expiresAt: number
 }
+interface DesktopOptions {
+  storage?: Storage
+  createPeer?: ScannerPeerFactory
+  clock?: () => number
+  origin?: () => string
+}
+
 export class DesktopScanner {
+  private options: DesktopOptions
   private credentials?: ScannerCredentials
   private consumer: Consumer | null = null
-  private version = 0
+  private peer?: Peer
+  private opening?: Promise<Peer>
+  private connection?: DataConnection
+  private connections = new Map<DataConnection, number>()
   private epoch = 0
-  private timer?: ReturnType<typeof setTimeout>
-  private abort?: AbortController
-  private busy = false
-  private creating = false
-  private heartbeat = 0
-  private delay = 1000
+  private timer?: ReturnType<typeof setInterval>
+  private retry?: ReturnType<typeof setTimeout>
+  private lastSeen = 0
+  private lastState = 0
+  private startedAt = 0
   private receipts = new Map<string, ScannerResult>()
   private listeners = new Set<() => void>()
+  private storageListener?: () => void
   private state: DesktopState = {
     linking: false,
     paired: false,
     message: "Teléfono sin vincular",
     url: "",
-    pairUntil: 0,
+    expiresAt: 0,
   }
-  private api: typeof scannerRequest
-  constructor(api: typeof scannerRequest = scannerRequest) {
-    this.api = api
+  constructor(options: DesktopOptions = {}) {
+    this.options = options
+  }
+  private now() {
+    return (this.options.clock ?? Date.now)()
+  }
+  private storage() {
+    return this.options.storage ?? window.localStorage
   }
   getSnapshot = () => this.state
   subscribe = (callback: () => void) => {
@@ -54,182 +80,367 @@ export class DesktopScanner {
     this.state = { ...this.state, ...patch }
     this.listeners.forEach((callback) => callback())
   }
+  private saved() {
+    const raw = this.storage().getItem(desktopStorageKey)
+    try {
+      const value: unknown = JSON.parse(raw ?? "null")
+      return validCredentials(value) ? value : undefined
+    } catch {
+      return undefined
+    }
+  }
+  private valid() {
+    return !!this.credentials && this.now() < this.credentials.expiresAt
+  }
   setConsumer(consumer: Consumer | null) {
     if (this.consumer?.target.id === consumer?.target.id) return
     this.consumer = consumer
-    this.version++
-    this.heartbeat = 0
-    if (this.credentials && !this.busy) {
-      clearTimeout(this.timer)
-      void this.tick(this.epoch)
-    }
+    if (this.connection) this.sendState()
   }
   async link() {
-    if (this.creating) return
-    if (
-      this.credentials &&
-      (this.state.paired || this.state.pairUntil > Date.now())
-    )
-      return
-    this.creating = true
-    const closing = this.disconnect()
-    const epoch = this.epoch
-    this.update({ linking: true, message: "Preparando QR…" })
+    if (this.state.linking) return
     try {
-      await closing
-      if (epoch !== this.epoch) return
-      this.abort = new AbortController()
-      const result = await this.api<ScannerCredentials & {
-        pair: string
-        pairUntil: number
-      }>("sesion", undefined, { operation: "create" }, {
-        signal: this.abort.signal,
-      })
-      if (epoch !== this.epoch) return
-      this.credentials = { sessionId: result.sessionId, token: result.token }
-      const url = new URL("/lector", window.location.origin)
-      url.hash = new URLSearchParams({
-        session: result.sessionId,
-        pair: result.pair,
-      }).toString()
+      let credentials = this.saved()
+      if (!credentials || credentials.expiresAt <= this.now()) {
+        credentials = {
+          sessionId: crypto.randomUUID(),
+          token: scannerToken(),
+          expiresAt: this.now() + SCANNER_LIFETIME,
+        }
+        this.storage().setItem(desktopStorageKey, JSON.stringify(credentials))
+      }
+      await this.boot(credentials)
+    } catch {
       this.update({
-        url: url.href,
-        pairUntil: result.pairUntil,
-        message: "Escanea el QR con tu teléfono",
+        linking: false,
+        message:
+          "Permite el almacenamiento de este navegador para conservar el enlace de 8 horas.",
       })
-      this.heartbeat = 0
-      this.delay = 1000
-      void this.tick(epoch)
-    } catch (error) {
-      if (epoch === this.epoch)
-        this.update({
-          message:
-            error instanceof Error ? error.message : "No se pudo vincular.",
-        })
-    } finally {
-      this.creating = false
-      if (epoch === this.epoch) this.update({ linking: false })
     }
   }
-  async disconnect() {
-    const credentials = this.credentials
-    this.epoch++
-    this.abort?.abort()
-    clearTimeout(this.timer)
-    this.credentials = undefined
-    this.busy = false
-    this.receipts.clear()
-    this.heartbeat = 0
-    this.update({
-      linking: false,
-      paired: false,
-      url: "",
-      pairUntil: 0,
-      message: "Teléfono sin vincular",
-    })
-    if (credentials) {
-      try {
-        await this.api("sesion", credentials, { operation: "close" })
-      } catch {
-        /* The mailbox expires without laptop heartbeats. */
-      }
-    }
-  }
-  private async tick(epoch: number) {
-    if (!this.credentials || this.busy || epoch !== this.epoch) return
-    this.busy = true
-    this.abort = new AbortController()
-    const options = { signal: this.abort.signal }
+  async resume() {
     try {
-      const credentials = this.credentials
-      if (Date.now() - this.heartbeat >= 15000) {
-        const version = this.version
-        await this.api(
-          "sesion",
-          credentials,
-          {
-            operation: "heartbeat",
-            version,
-            target: this.consumer?.target ?? null,
-          },
-          options,
-        )
-        if (epoch !== this.epoch) return
-        if (version === this.version) this.heartbeat = Date.now()
-      }
-      const state = await this.api<ScannerState>(
-        this.consumer ? "eventos" : "sesion",
-        credentials,
-        undefined,
-        options,
-      )
-      if (epoch !== this.epoch) return
-      if (!state.paired && Date.now() > this.state.pairUntil) {
-        await this.disconnect()
-        this.update({
-          message: "El QR venció. Genera uno nuevo para vincular el teléfono.",
-        })
+      const saved = this.saved()
+      if (!saved) return
+      if (saved.expiresAt <= this.now()) {
+        this.expire()
         return
       }
+      await this.boot(saved)
+    } catch {
       this.update({
-        paired: state.paired,
-        message: state.paired
-          ? this.consumer
-            ? "Teléfono conectado · listo para escanear"
-            : "Teléfono conectado · lector pausado"
-          : "Escanea el QR con tu teléfono",
+        message: "No se pudo recuperar el enlace. Genera uno nuevo.",
       })
-      if (state.pending) {
-        const scan = state.pending
-        let result: ScannerResult
-        if (!this.consumer || scan.contextId !== this.consumer.target.id)
+    }
+  }
+  private async boot(credentials: ScannerCredentials) {
+    if (
+      this.peer &&
+      !this.peer.destroyed &&
+      this.credentials?.sessionId === credentials.sessionId
+    )
+      return
+    const previousOpening = this.opening
+    this.stop()
+    const epoch = this.epoch
+    this.credentials = credentials
+    this.startedAt = this.now()
+    const url = new URL(
+      "/lector",
+      (this.options.origin ?? (() => window.location.origin))(),
+    )
+    url.hash = new URLSearchParams({
+      session: credentials.sessionId,
+      token: credentials.token,
+      expires: String(credentials.expiresAt),
+    }).toString()
+    this.update({
+      linking: true,
+      url: url.href,
+      expiresAt: credentials.expiresAt,
+      message: "Enlace listo · conectando el lector…",
+    })
+    this.timer = setInterval(() => this.maintain(), 1000)
+    if (typeof window !== "undefined") {
+      const onStorage = (event: StorageEvent) => {
+        if (event.key !== desktopStorageKey && event.key !== null) return
+        try {
+          if (this.saved()?.token !== this.credentials?.token)
+            this.end("revoked")
+        } catch {
+          this.end("revoked")
+        }
+      }
+      window.addEventListener("storage", onStorage)
+      this.storageListener = () =>
+        window.removeEventListener("storage", onStorage)
+    }
+    try {
+      if (previousOpening) {
+        await previousOpening.catch(() => undefined)
+        if (epoch !== this.epoch) return
+      }
+      const opening = (this.options.createPeer ?? scannerTransport.createPeer)(
+        credentials.sessionId,
+      )
+      this.opening = opening
+      const peer = await opening
+      if (this.opening === opening) this.opening = undefined
+      if (epoch !== this.epoch) {
+        peer.destroy()
+        return
+      }
+      this.peer = peer
+      peer.on("open", () => {
+        if (epoch !== this.epoch) return
+        this.update({
+          linking: false,
+          message: "Escanea el QR o abre el enlace en tu teléfono",
+        })
+      })
+      peer.on("connection", (connection) => {
+        if (epoch !== this.epoch) {
+          connection.close()
+          return
+        }
+        this.accept(connection, epoch)
+      })
+      peer.on("disconnected", () => {
+        if (epoch !== this.epoch || !this.valid()) return
+        if (!this.connection)
+          this.update({
+            message:
+              "Reconectando el lector. Comprueba tu conexión a Internet.",
+          })
+        clearTimeout(this.retry)
+        this.retry = setTimeout(() => {
+          if (epoch === this.epoch && !peer.destroyed && peer.disconnected)
+            peer.reconnect()
+        }, 2000)
+      })
+      peer.on("error", (error) => {
+        if (epoch !== this.epoch) return
+        this.update({
+          linking: false,
+          message:
+            error.type === "unavailable-id"
+              ? "Este enlace ya está abierto en otra pestaña de la computadora. Usa esa pestaña o ciérrala antes de reintentar."
+              : "No se pudo conectar el lector. Revisa Internet y la Wi-Fi; puedes reintentar con el mismo enlace.",
+        })
+        if (!this.connection) {
+          this.peer = undefined
+          peer.destroy()
+        }
+      })
+    } catch {
+      if (epoch === this.epoch)
+        this.update({
+          linking: false,
+          message:
+            "No se pudo cargar el lector. Reintenta con el mismo enlace.",
+        })
+    }
+  }
+  private accept(connection: DataConnection, epoch: number) {
+    // Unauthenticated connections have ten seconds to prove possession of the QR secret.
+    if (this.connections.size >= 8) {
+      connection.close()
+      return
+    }
+    this.connections.set(connection, this.now())
+    connection.on("data", (value) => {
+      if (epoch !== this.epoch) return
+      if (!this.valid()) {
+        this.expire()
+        return
+      }
+      const message = readPeerMessage(value)
+      if (!message) {
+        connection.close()
+        return
+      }
+      if (message.type === "hello") {
+        if (
+          message.protocol !== 1 ||
+          message.sessionId !== this.credentials?.sessionId ||
+          message.token !== this.credentials?.token
+        ) {
+          sendPeerMessage(connection, { type: "end", reason: "unauthorized" })
+          return
+        }
+        if (this.connection && this.connection !== connection) {
+          sendPeerMessage(connection, { type: "end", reason: "busy" })
+          return
+        }
+        this.connection = connection
+        this.lastSeen = this.now()
+        this.update({ paired: true, linking: false })
+        this.sendState()
+        return
+      }
+      if (connection !== this.connection) {
+        connection.close()
+        return
+      }
+      this.lastSeen = this.now()
+      if (message.type === "disconnect") {
+        void this.disconnect()
+        return
+      }
+      if (message.type === "ping") {
+        this.sendState()
+        return
+      }
+      if (message.type !== "scan" || !validScan(message.scan)) return
+      const scan = message.scan
+      const previous = this.receipts.get(scan.id)
+      let result: ScannerResult
+      if (
+        previous &&
+        previous.contextId === scan.contextId &&
+        previous.code === scan.code
+      )
+        result = previous
+      else if (
+        previous ||
+        !this.consumer ||
+        scan.contextId !== this.consumer.target.id
+      ) {
+        result = {
+          ...scan,
+          outcome: "paused",
+          message: "La operación cambió. Vuelve a escanear.",
+        }
+      } else {
+        try {
+          result = this.consumer.read(scan)
+        } catch {
           result = {
             ...scan,
             outcome: "paused",
-            message: "La operación cambió. Vuelve a escanear.",
+            message: "No se pudo seleccionar el producto. Vuelve a escanear.",
           }
-        else {
-          result = this.receipts.get(scan.id) ?? this.consumer.read(scan)
-          this.receipts.set(scan.id, result)
-          if (this.receipts.size > 50)
-            this.receipts.delete(this.receipts.keys().next().value!)
         }
-        await this.api(
-          "eventos",
-          credentials,
-          { operation: "result", result },
-          options,
-        )
+        this.receipts.set(scan.id, result)
+        if (this.receipts.size > 200)
+          this.receipts.delete(this.receipts.keys().next().value!)
       }
-      this.delay = 1000
-    } catch (error) {
-      if (epoch !== this.epoch) return
+      sendPeerMessage(connection, { type: "result", result })
+    })
+    const close = () => {
+      this.connections.delete(connection)
+      if (epoch !== this.epoch || this.connection !== connection) return
+      this.connection = undefined
       this.update({
+        paired: false,
         message:
-          error instanceof Error ? error.message : "Reconectando lector…",
+          "Teléfono desconectado · vuelve a abrir el mismo enlace para reconectar",
       })
-      if (
-        error instanceof ScannerApiError &&
-        [401, 410].includes(error.status)
-      ) {
-        this.credentials = undefined
-        this.update({ paired: false, url: "", pairUntil: 0 })
-        return
+    }
+    connection.on("close", close)
+    connection.on("error", () => {
+      connection.close()
+      close()
+    })
+  }
+  private sendState() {
+    if (!this.valid()) {
+      this.expire()
+      return
+    }
+    const target = this.consumer?.target ?? null
+    sendPeerMessage(this.connection, {
+      type: "state",
+      expiresAt: this.credentials!.expiresAt,
+      target,
+    })
+    this.lastState = this.now()
+    if (this.connection)
+      this.update({
+        message: target
+          ? "Teléfono conectado · listo para escanear"
+          : "Teléfono conectado · lector pausado",
+      })
+  }
+  private maintain() {
+    if (!this.valid()) {
+      this.expire()
+      return
+    }
+    if (this.state.linking && this.now() - this.startedAt >= 20000) {
+      this.peer?.destroy()
+      this.peer = undefined
+      this.update({
+        linking: false,
+        message:
+          "No se pudo conectar con el servicio de enlace. Comprueba Internet y reintenta con el mismo QR.",
+      })
+    }
+    for (const [connection, since] of this.connections) {
+      if (connection !== this.connection && this.now() - since >= 10000) {
+        this.connections.delete(connection)
+        connection.close()
       }
-      this.delay = Math.min(30000, this.delay * 2)
-    } finally {
-      if (epoch === this.epoch) {
-        this.busy = false
-        if (this.credentials)
-          this.timer = setTimeout(
-            () => void this.tick(epoch),
-            this.delay > 1000
-              ? this.delay
-              : this.consumer || !this.state.paired
-                ? 1000
-                : 15000,
-          )
-      }
+    }
+    if (this.connection && this.now() - this.lastSeen >= 20000) {
+      const connection = this.connection
+      this.connection = undefined
+      connection.close()
+      this.update({
+        paired: false,
+        message: "Teléfono sin conexión. Abre el mismo enlace para reconectar.",
+      })
+    } else if (this.connection && this.now() - this.lastState >= 5000)
+      this.sendState()
+  }
+  private expire() {
+    this.end("expired")
+  }
+  private end(reason: "expired" | "revoked") {
+    sendPeerMessage(this.connection, { type: "end", reason })
+    const peer = this.peer
+    const connections = [...this.connections.keys()]
+    this.peer = undefined
+    this.connections.clear()
+    this.connection = undefined
+    this.stop()
+    setTimeout(() => {
+      for (const connection of connections) connection.close()
+      peer?.destroy()
+    }, 100)
+    this.credentials = undefined
+    this.receipts.clear()
+    this.update({
+      url: "",
+      expiresAt: 0,
+      message:
+        reason === "expired"
+          ? "El enlace venció tras 8 horas. Genera uno nuevo."
+          : "Teléfono desconectado. Genera un nuevo enlace y QR.",
+    })
+  }
+  // Lifecycle cleanup preserves the link. Only explicit disconnect/logout revokes it.
+  stop() {
+    this.epoch++
+    clearInterval(this.timer)
+    clearTimeout(this.retry)
+    this.storageListener?.()
+    this.storageListener = undefined
+    this.connection = undefined
+    for (const connection of this.connections.keys()) connection.close()
+    this.connections.clear()
+    this.peer?.destroy()
+    this.peer = undefined
+    this.update({ paired: false, linking: false })
+  }
+  async disconnect() {
+    const session = this.credentials
+    this.end("revoked")
+    try {
+      if (!session || this.saved()?.sessionId === session.sessionId)
+        this.storage().removeItem(desktopStorageKey)
+    } catch {
+      /* Storage may have been disabled after pairing. */
     }
   }
 }

@@ -3,7 +3,7 @@ import { PhoneScanner } from "./PhoneScanner"
 import type { IScannerControls } from "@zxing/browser"
 
 export default function PhoneReaderPage() {
-  const [reader] = useState(() => new PhoneScanner(window.sessionStorage))
+  const [reader] = useState(() => new PhoneScanner(window.localStorage))
   const state = useSyncExternalStore(reader.subscribe, reader.getSnapshot)
   const [camera, setCamera] = useState(false)
   const [cameraBusy, setCameraBusy] = useState(false)
@@ -103,6 +103,12 @@ export default function PhoneReaderPage() {
         </p>
       </header>
       <section className="phone-reader-card">
+        {state.kind && (
+          <p className="phone-reader-operation">
+            Escaneando para {state.kind === "sale" ? "venta" : "compra"} en la
+            computadora
+          </p>
+        )}
         <div
           className={`phone-reader-state ${state.accepting ? "is-ready" : ""}`}
           role="status"

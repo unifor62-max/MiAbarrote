@@ -16,14 +16,11 @@ export interface ScannerResult extends RemoteScan {
 export interface ScannerCredentials {
   sessionId: string
   token: string
+  expiresAt: number
 }
-export interface ScannerState {
-  paired: boolean
-  accepting: boolean
-  target: ScannerTarget | null
-  pending?: RemoteScan | null
-  result?: ScannerResult | null
-}
+export const SCANNER_LIFETIME = 8 * 60 * 60 * 1000
+export const desktopStorageKey = "miabarrote:desktop-reader:v2"
+export const phoneStorageKey = "miabarrote:phone-reader:v2"
 export function validScannerCode(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -37,54 +34,44 @@ export function validScannerId(value: unknown): value is string {
   return typeof value === "string" && /^[\w-]{16,80}$/.test(value)
 }
 export function scannerToken() {
-  const bytes = crypto.getRandomValues(new Uint8Array(32))
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
-    "",
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("")
+}
+export function validCredentials(value: unknown): value is ScannerCredentials {
+  if (!value || typeof value !== "object") return false
+  const item = value as ScannerCredentials
+  return (
+    validScannerId(item.sessionId) &&
+    typeof item.token === "string" &&
+    /^[a-f0-9]{64}$/.test(item.token) &&
+    Number.isSafeInteger(item.expiresAt) &&
+    item.expiresAt > 0
   )
 }
-export class ScannerApiError extends Error {
-  readonly status: number
-  constructor(message: string, status: number) {
-    super(message)
-    this.status = status
-  }
-}
-export async function scannerRequest<T>(
-  route: "sesion" | "eventos",
-  credentials?: ScannerCredentials,
-  body?: unknown,
-  options: {
-    signal?: AbortSignal
-    eventId?: string
-    fetcher?: typeof fetch
-  } = {},
-): Promise<T> {
-  const query = new URLSearchParams()
-  if (credentials) query.set("sessionId", credentials.sessionId)
-  if (options.eventId) query.set("eventId", options.eventId)
-  const response = await (options.fetcher ?? globalThis.fetch.bind(globalThis))(
-    `/api/lector-${route}${query.size ? "?" + query : ""}`,
-    {
-      method: body === undefined ? "GET" : "POST",
-      credentials: "same-origin",
-      cache: "no-store",
-      headers: {
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        ...(credentials
-          ? { Authorization: "Bearer " + credentials.token }
-          : {}),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: options.signal
-        ? AbortSignal.any([options.signal, AbortSignal.timeout(10000)])
-        : AbortSignal.timeout(10000),
-    },
+export function validScan(value: unknown): value is RemoteScan {
+  if (!value || typeof value !== "object") return false
+  const item = value as RemoteScan
+  return (
+    validScannerId(item.id) &&
+    validScannerId(item.contextId) &&
+    validScannerCode(item.code)
   )
-  const data = await response.json()
-  if (!response.ok)
-    throw new ScannerApiError(
-      data.error || "No se pudo conectar el lector.",
-      response.status,
-    )
-  return data as T
+}
+export function validTarget(value: unknown): value is ScannerTarget | null {
+  if (value === null) return true
+  if (!value || typeof value !== "object") return false
+  const item = value as ScannerTarget
+  return validScannerId(item.id) && ["sale", "purchase"].includes(item.kind)
+}
+export function validResult(value: unknown): value is ScannerResult {
+  if (!validScan(value)) return false
+  const item = value as ScannerResult
+  return (
+    ["selected", "already-selected", "unknown", "no-stock", "paused"].includes(
+      item.outcome,
+    ) &&
+    typeof item.message === "string" &&
+    item.message.length <= 240
+  )
 }

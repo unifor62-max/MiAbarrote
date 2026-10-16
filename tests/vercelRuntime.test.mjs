@@ -19,10 +19,6 @@ test("Vercel adapters load as emitted JavaScript and report missing Redis as JSO
         "api/webhook-pago.ts",
         "api/pagos-sesion.ts",
         "api/pagos-estado.ts",
-        "api/lector-sesion.ts",
-        "api/lector-eventos.ts",
-        "netlify/functions/lector-sesion.mts",
-        "netlify/functions/lector-eventos.mts",
         "--target",
         "ES2022",
         "--module",
@@ -54,28 +50,6 @@ test("Vercel adapters load as emitted JavaScript and report missing Redis as JSO
       assert.deepEqual(await response.json(), {
         error: "Configura el buzón Redis de pagos.",
       })
-    }
-    for (const route of ["lector-sesion", "lector-eventos"]) {
-      const vercel = await import(
-        pathToFileURL(join(directory, "api", route + ".js")).href
-      )
-      const netlify = await import(
-        pathToFileURL(join(directory, "netlify/functions", route + ".mjs")).href
-      )
-      assert.equal(netlify.config.path, "/api/" + route)
-      for (const handler of [
-        vercel.default.fetch,
-        (request) => netlify.default(request, { ip: "test" }),
-      ]) {
-        const response = await handler(
-          new Request("https://example.test/api/" + route),
-        )
-        assert.equal(response.status, 503)
-        assert.equal(response.headers.get("Cache-Control"), "no-store")
-        assert.deepEqual(await response.json(), {
-          error: "Configura Redis para vincular el teléfono.",
-        })
-      }
     }
   } finally {
     if (oldUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL

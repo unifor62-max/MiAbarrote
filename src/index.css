@@ -644,6 +644,10 @@ button:disabled {
 .phone-reader-inline { display: block; color: #38674f; margin: 0 0 12px; font-size: 13px; }
 .phone-pairing { display: grid; justify-items: center; gap: 14px; text-align: center; }
 .phone-pairing img { max-width: 100%; height: auto; background: white; border-radius: 12px; }
+.phone-reader-link { display: grid; gap: 10px; width: 100%; min-width: 0; }
+.phone-reader-link input { font-size: 12px; }
+.phone-reader-local-note { padding: 12px; border-radius: 12px; background: #fff1df; font-size: 12px; line-height: 1.6; }
+.phone-reader-operation { font-weight: 600; }
 .phone-reader-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
 .phone-reader-page { min-height: 100dvh; background: #f8faf4; color: #084c38; padding: 28px 18px; }
 .phone-reader-page > header, .phone-reader-card { max-width: 540px; margin: 0 auto; }

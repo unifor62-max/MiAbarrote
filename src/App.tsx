@@ -31,10 +31,13 @@ export default function App() {
   const confirming = useRef(false)
   useEffect(() => {
     const listener = getPaymentListener()
-    if (isAuthenticated) listener.start()
+    if (isAuthenticated) {
+      listener.start()
+      void desktopScanner.resume()
+    }
     return () => {
       listener.stop()
-      void desktopScanner.disconnect()
+      desktopScanner.stop()
     }
   }, [isAuthenticated])
   async function sell(
@@ -83,6 +86,7 @@ export default function App() {
     if (target === active) return
     if (dirtyProducts) setPendingNavigation(target)
     else if (target === "logout") {
+      void desktopScanner.disconnect()
       setMenuOpen(false)
       setIsAuthenticated(false)
     } else setActive(target)
@@ -206,8 +210,10 @@ export default function App() {
             if (target === "register-sale") {
               setActive("Ventas")
               dispatch({ type: "sale/open" })
-            } else if (target === "logout") setIsAuthenticated(false)
-            else setActive(target)
+            } else if (target === "logout") {
+              void desktopScanner.disconnect()
+              setIsAuthenticated(false)
+            } else setActive(target)
           }}
         />
       )}

@@ -1,15 +1,23 @@
+import type { DataConnection, Peer } from "peerjs"
 import {
-  scannerRequest,
-  ScannerApiError,
-  scannerToken,
+  phoneStorageKey,
+  validCredentials,
   validScannerCode,
-  validScannerId,
-  type ScannerCredentials,
-  type ScannerResult,
-  type ScannerState,
+  validResult,
+  validTarget,
   type RemoteScan,
+  type ScannerCredentials,
+  type ScannerKind,
+  type ScannerResult,
+  type ScannerTarget,
 } from "../../data/remoteScanner.ts"
-const storageKey = "miabarrote:phone-reader"
+import {
+  readPeerMessage,
+  scannerTransport,
+  sendPeerMessage,
+  type ScannerPeerFactory,
+} from "./PeerTransport.ts"
+
 interface PhoneState {
   connected: boolean
   accepting: boolean
@@ -17,19 +25,30 @@ interface PhoneState {
   message: string
   result: ScannerResult | null
   lastCode: string
+  kind: ScannerKind | null
+  expiresAt: number
+}
+interface PhoneOptions {
+  createPeer?: ScannerPeerFactory
+  clock?: () => number
+  retryMs?: number
 }
 export class PhoneScanner {
+  private storage: Storage
+  private options: PhoneOptions
   private credentials?: ScannerCredentials
-  private pair?: string
+  private peer?: Peer
+  private connection?: DataConnection
+  private target: ScannerTarget | null = null
   private pending?: RemoteScan
   private lastCode = ""
-  private target?: ScannerState["target"]
   private active = false
   private generation = 0
-  private busy = false
-  private timer?: ReturnType<typeof setTimeout>
-  private abort?: AbortController
-  private delay = 2000
+  private pulse?: ReturnType<typeof setInterval>
+  private retry?: ReturnType<typeof setTimeout>
+  private lastSeen = 0
+  private lastSend = 0
+  private listeners = new Set<() => void>()
   private state: PhoneState = {
     connected: false,
     accepting: false,
@@ -37,13 +56,15 @@ export class PhoneScanner {
     message: "Vinculando teléfono…",
     result: null,
     lastCode: "",
+    kind: null,
+    expiresAt: 0,
   }
-  private listeners = new Set<() => void>()
-  private storage: Storage
-  private api: typeof scannerRequest
-  constructor(storage: Storage, api: typeof scannerRequest = scannerRequest) {
+  constructor(storage: Storage, options: PhoneOptions = {}) {
     this.storage = storage
-    this.api = api
+    this.options = options
+  }
+  private now() {
+    return (this.options.clock ?? Date.now)()
   }
   getSnapshot = () => this.state
   subscribe = (callback: () => void) => {
@@ -56,212 +77,267 @@ export class PhoneScanner {
     this.state = { ...this.state, ...patch }
     this.listeners.forEach((callback) => callback())
   }
-  private save() {
-    this.storage.setItem(
-      storageKey,
-      JSON.stringify({
-        credentials: this.credentials,
-        pending: this.pending,
-        pair: this.pair,
-      }),
-    )
-  }
   start(fragment = "") {
     if (this.active) return
-    this.active = true
-    this.generation++
     try {
       const params = new URLSearchParams(fragment.replace(/^#/, ""))
-      if (params.has("session")) {
-        const sessionId = params.get("session"),
-          pair = params.get("pair")
-        if (!validScannerId(sessionId) || !pair || !/^[a-f0-9]{64}$/.test(pair))
-          throw Error("El enlace de vinculación es inválido.")
-        this.credentials = { sessionId, token: scannerToken() }
-        this.pair = pair
-        this.pending = undefined
-        this.save()
-      } else {
-        const saved = JSON.parse(this.storage.getItem(storageKey) ?? "null")
-        if (
-          !saved?.credentials ||
-          !validScannerId(saved.credentials.sessionId) ||
-          !/^[a-f0-9]{64}$/.test(saved.credentials.token)
+      let saved: unknown
+      if (params.size) {
+        saved = {
+          sessionId: params.get("session"),
+          token: params.get("token"),
+          expiresAt: Number(params.get("expires")),
+        }
+        if (!validCredentials(saved))
+          throw Error(
+            "El enlace es inválido o pertenece al lector anterior. Genera un nuevo QR en la computadora.",
+          )
+      } else saved = JSON.parse(this.storage.getItem(phoneStorageKey) ?? "null")
+      if (!validCredentials(saved))
+        throw Error("Abre el enlace o QR de vinculación desde la computadora.")
+      if (saved.expiresAt <= this.now()) {
+        this.storage.removeItem(phoneStorageKey)
+        throw Error(
+          "El enlace venció tras 8 horas. Genera uno nuevo en la computadora.",
         )
-          throw Error("Abre un QR de vinculación desde la laptop.")
-        this.credentials = saved.credentials
-        this.pair = saved.pair
-        if (
-          saved.pending &&
-          validScannerId(saved.pending.id) &&
-          validScannerId(saved.pending.contextId) &&
-          validScannerCode(saved.pending.code)
-        )
-          this.pending = saved.pending
       }
-      void this.tick(this.generation)
+      this.credentials = saved
+      this.storage.setItem(phoneStorageKey, JSON.stringify(saved))
+      this.active = true
+      this.generation++
+      this.lastSeen = this.now()
+      this.update({
+        message: "Conectando con la computadora…",
+        expiresAt: saved.expiresAt,
+      })
+      this.pulse = setInterval(() => this.maintain(), 1000)
+      void this.connect(this.generation)
     } catch (error) {
       this.update({
-        message: error instanceof Error ? error.message : "Abre un nuevo QR.",
+        connected: false,
+        accepting: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "No se pudo abrir el enlace. Permite el almacenamiento y vuelve a intentarlo.",
       })
-      this.active = false
     }
   }
-  stop() {
-    this.active = false
+  private async connect(generation: number) {
+    if (!this.active || generation !== this.generation || !this.credentials)
+      return
+    this.lastSeen = this.now()
+    try {
+      const peer = await (
+        this.options.createPeer ?? scannerTransport.createPeer
+      )()
+      if (!this.active || generation !== this.generation) {
+        peer.destroy()
+        return
+      }
+      this.peer = peer
+      peer.on("open", () => {
+        if (generation !== this.generation || !this.active || !this.credentials)
+          return
+        const connection = peer.connect(this.credentials.sessionId, {
+          reliable: true,
+          serialization: "json",
+        })
+        this.connection = connection
+        connection.on("open", () => {
+          if (generation !== this.generation || !this.credentials) return
+          sendPeerMessage(connection, {
+            type: "hello",
+            protocol: 1,
+            sessionId: this.credentials.sessionId,
+            token: this.credentials.token,
+          })
+        })
+        connection.on("data", (value) => {
+          if (generation === this.generation && this.active) this.receive(value)
+        })
+        connection.on("close", () => this.reconnect(generation))
+        connection.on("error", () => this.reconnect(generation))
+      })
+      peer.on("error", () => this.reconnect(generation))
+      peer.on("disconnected", () => {
+        if (!this.state.connected) this.reconnect(generation)
+      })
+    } catch {
+      this.reconnect(generation)
+    }
+  }
+  private receive(value: unknown) {
+    if (!this.credentials || this.credentials.expiresAt <= this.now()) {
+      this.ended("expired")
+      return
+    }
+    const message = readPeerMessage(value)
+    if (!message) return
+    if (message.type === "end") {
+      const reason = message.reason
+      if (
+        ["expired", "revoked", "unauthorized", "busy"].includes(String(reason))
+      )
+        this.ended(String(reason))
+      return
+    }
+    if (
+      message.type === "state" &&
+      message.expiresAt === this.credentials.expiresAt &&
+      validTarget(message.target)
+    ) {
+      this.lastSeen = this.now()
+      const changed = this.target?.id !== message.target?.id
+      if (changed) this.lastCode = ""
+      this.target = message.target
+      this.update({
+        connected: true,
+        accepting: !!this.target,
+        kind: this.target?.kind ?? null,
+        result: changed ? null : this.state.result,
+        message: this.pending
+          ? "Esperando confirmación de la computadora…"
+          : !this.target
+            ? "Lector pausado. Abre la selección de productos en la computadora."
+            : !changed && this.state.result
+              ? this.state.result.message
+              : "Listo para escanear en " +
+                (this.target.kind === "sale" ? "venta" : "compra"),
+      })
+      if (this.pending) this.sendPending()
+    } else if (message.type === "result" && validResult(message.result)) {
+      this.lastSeen = this.now()
+      const result = message.result
+      if (
+        !this.pending ||
+        result.id !== this.pending.id ||
+        result.code !== this.pending.code ||
+        result.contextId !== this.pending.contextId
+      )
+        return
+      this.pending = undefined
+      this.lastCode = result.contextId === this.target?.id ? result.code : ""
+      this.update({
+        busy: false,
+        result,
+        lastCode: result.code,
+        message: result.message,
+      })
+    }
+  }
+  private reconnect(generation: number) {
+    if (!this.active || generation !== this.generation || this.retry) return
     this.generation++
-    this.abort?.abort()
-    clearTimeout(this.timer)
-    this.busy = false
-  }
-  async disconnect() {
-    this.stop()
-    if (this.credentials) {
-      try {
-        await this.api("sesion", this.credentials, { operation: "close" })
-      } catch {}
-    }
-    this.storage.removeItem(storageKey)
-    this.credentials = undefined
-    this.pending = undefined
+    const next = this.generation
+    const peer = this.peer
+    this.peer = undefined
+    this.connection = undefined
+    peer?.destroy()
     this.update({
       connected: false,
       accepting: false,
-      busy: false,
-      message: "Teléfono desconectado. Abre un nuevo QR en la laptop.",
+      message:
+        "Sin conexión con la computadora. Comprueba que esté abierta y ambos equipos usen la misma Wi-Fi. Reconectando…",
     })
+    this.retry = setTimeout(() => {
+      this.retry = undefined
+      if (this.active && next === this.generation) void this.connect(next)
+    }, this.options.retryMs ?? 2000)
+  }
+  private maintain() {
+    if (!this.active || !this.credentials) return
+    if (this.credentials.expiresAt <= this.now()) {
+      this.ended("expired")
+      return
+    }
+    if (this.retry) return
+    if (this.now() - this.lastSeen >= 20000) {
+      this.reconnect(this.generation)
+      return
+    }
+    if (!this.state.connected || this.now() - this.lastSend < 3000) return
+    if (this.pending) this.sendPending()
+    else {
+      sendPeerMessage(this.connection, { type: "ping" })
+      this.lastSend = this.now()
+    }
+  }
+  private sendPending() {
+    if (!this.pending || !this.state.connected) return
+    sendPeerMessage(this.connection, { type: "scan", scan: this.pending })
+    this.lastSend = this.now()
   }
   resetLatch() {
     this.lastCode = ""
   }
   scan(code: string) {
+    if (this.credentials && this.credentials.expiresAt <= this.now()) {
+      this.ended("expired")
+      return
+    }
     if (
       !this.active ||
       !this.state.accepting ||
+      !this.target ||
       this.pending ||
       code === this.lastCode ||
       !validScannerCode(code)
     )
       return
     this.lastCode = code
-    if (!this.target) return
     this.pending = { id: crypto.randomUUID(), contextId: this.target.id, code }
-    this.save()
     this.update({
       busy: true,
-      lastCode: code,
       result: null,
-      message: "Esperando confirmación de la laptop…",
+      lastCode: code,
+      message: "Esperando confirmación de la computadora…",
     })
-    if (!this.busy) {
-      clearTimeout(this.timer)
-      void this.tick(this.generation)
-    }
+    this.sendPending()
   }
-  private finish(result: ScannerResult) {
+  stop() {
+    this.active = false
+    this.generation++
+    clearInterval(this.pulse)
+    clearTimeout(this.retry)
+    this.retry = undefined
+    this.connection = undefined
+    this.peer?.destroy()
+    this.peer = undefined
+    this.update({ connected: false, accepting: false })
+  }
+  private ended(reason: string) {
+    this.stop()
     this.pending = undefined
-    this.save()
+    if (reason !== "busy") {
+      try {
+        this.storage.removeItem(phoneStorageKey)
+      } catch {
+        /* The in-memory reader is still stopped. */
+      }
+      this.credentials = undefined
+    }
+    const messages: Record<string, string> = {
+      expired:
+        "El enlace venció tras 8 horas. Genera uno nuevo en la computadora.",
+      revoked:
+        "La computadora desconectó el lector. Abre un nuevo enlace o QR.",
+      unauthorized:
+        "El enlace ya no es válido. Genera uno nuevo en la computadora.",
+      busy: "Ya hay otro teléfono conectado. Desconéctalo antes de utilizar este.",
+    }
     this.update({
       busy: false,
-      result,
-      lastCode: result.code,
-      message: result.message,
+      kind: null,
+      message: messages[reason] ?? "Lector desconectado.",
     })
   }
-  private async tick(generation: number) {
-    if (
-      !this.active ||
-      !this.credentials ||
-      this.busy ||
-      generation !== this.generation
-    )
-      return
-    this.busy = true
-    this.abort = new AbortController()
-    const options = { signal: this.abort.signal, eventId: this.pending?.id }
-    try {
-      if (this.pair) {
-        await this.api(
-          "sesion",
-          this.credentials,
-          {
-            operation: "pair",
-            pair: this.pair,
-            sender: this.credentials.token,
-          },
-          options,
-        )
-        if (!this.active || generation !== this.generation) return
-        this.pair = undefined
-        this.save()
-      }
-      const state = await this.api<ScannerState>(
-        "eventos",
-        this.credentials,
-        undefined,
-        options,
-      )
-      if (!this.active || generation !== this.generation) return
-      if (this.target?.id !== state.target?.id) this.lastCode = ""
-      this.target = state.target
-      this.update({
-        connected: true,
-        accepting: state.accepting,
-        message: this.pending
-          ? "Esperando confirmación de la laptop…"
-          : state.accepting
-            ? (this.state.result?.message ?? "Listo para escanear")
-            : "Lector pausado. Abre la selección de productos en la laptop.",
-      })
-      if (this.pending) {
-        if (state.result) this.finish(state.result)
-        else if (
-          !state.accepting ||
-          state.target?.id !== this.pending.contextId
-        )
-          this.finish({
-            ...this.pending,
-            outcome: "paused",
-            message: "La operación cambió. Vuelve a escanear.",
-          })
-        else {
-          const scan = this.pending
-          const result = await this.api<{ result?: ScannerResult }>(
-            "eventos",
-            this.credentials,
-            { operation: "scan", scan },
-            options,
-          )
-          if (!this.active || generation !== this.generation) return
-          if (result.result) this.finish(result.result)
-        }
-      }
-      this.delay = 2000
-    } catch (error) {
-      if (!this.active || generation !== this.generation) return
-      this.update({
-        accepting: false,
-        message:
-          error instanceof Error ? error.message : "Reconectando lector…",
-      })
-      if (
-        error instanceof ScannerApiError &&
-        ([401, 403, 410].includes(error.status) ||
-          (this.pair && error.status === 409))
-      ) {
-        this.storage.removeItem(storageKey)
-        this.credentials = undefined
-        this.pending = undefined
-        this.update({ connected: false, busy: false })
-        return
-      }
-      this.delay = Math.min(30000, this.delay * 2)
-    } finally {
-      if (generation === this.generation) {
-        this.busy = false
-        if (this.active && this.credentials)
-          this.timer = setTimeout(() => void this.tick(generation), this.delay)
-      }
-    }
+  async disconnect() {
+    sendPeerMessage(this.connection, { type: "disconnect" })
+    // Let the reliable data channel deliver the explicit revocation before closing it.
+    const peer = this.peer
+    this.peer = undefined
+    this.ended("revoked")
+    setTimeout(() => peer?.destroy(), 100)
   }
 }

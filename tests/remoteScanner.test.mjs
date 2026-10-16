@@ -1,482 +1,378 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { createScannerApi, scannerApiFromEnv } from "../server/scannerApi.ts"
 import { DesktopScanner } from "../src/features/scanner/DesktopScanner.ts"
 import { PhoneScanner } from "../src/features/scanner/PhoneScanner.ts"
-import { scannerRequest, validScannerCode } from "../src/data/remoteScanner.ts"
-import { LuaScannerStore } from "./helpers/scannerStore.mjs"
-import { MemoryStorage } from "./helpers/paymentStore.mjs"
+import {
+  desktopStorageKey,
+  phoneStorageKey,
+  SCANNER_LIFETIME,
+  validScannerCode,
+} from "../src/data/remoteScanner.ts"
+import { FakePeerNetwork, MemoryScannerStorage } from "./helpers/peerNetwork.ts"
+import { readFile } from "node:fs/promises"
 
-const origin = "https://shop.example"
-function fixture() {
-  const store = new LuaScannerStore()
-  let now = Date.now()
-  const api = createScannerApi(store, () => now)
-  async function send(route, session, body, headers = {}, eventId) {
-    const query = new URLSearchParams(
-      session ? { sessionId: session.sessionId } : {},
-    )
-    if (eventId) query.set("eventId", eventId)
-    return api(
-      new Request(`${origin}/api/lector-${route}?${query}`, {
-        method: body ? "POST" : "GET",
-        headers: {
-          Origin: origin,
-          "Content-Type": "application/json",
-          ...(session ? { Authorization: "Bearer " + session.token } : {}),
-          ...headers,
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      }),
-      "lector-" + route,
-      "test-ip",
-    )
-  }
-  const request = async (route, credentials, body, options = {}) => {
-    const response = await send(route, credentials, body, {}, options.eventId)
-    const result = await response.json()
-    if (!response.ok) {
-      const { ScannerApiError } = await import("../src/data/remoteScanner.ts")
-      throw new ScannerApiError(result.error, response.status)
-    }
-    return result
-  }
-  const setup = async () => {
-    const owner = await request("sesion", undefined, { operation: "create" })
-    const phone = { sessionId: owner.sessionId, token: "a".repeat(64) }
-    await request("sesion", phone, {
-      operation: "pair",
-      pair: owner.pair,
-      sender: phone.token,
-    })
-    const target = { id: crypto.randomUUID(), kind: "sale" }
-    await request("sesion", owner, {
-      operation: "heartbeat",
-      version: 1,
-      target,
-    })
-    return { owner, phone, target }
-  }
-  return {
-    store,
-    send,
-    request,
-    setup,
-    advance(ms) {
-      now += ms
-    },
-  }
-}
 const flush = async () => {
-  for (let i = 0; i < 6; i++)
-    await new Promise((resolve) => setImmediate(resolve))
+  await new Promise((resolve) => setTimeout(resolve, 40))
 }
-
-test("atomic mailbox pairs one phone, deduplicates scans and only confirms after laptop acknowledgement", async () => {
-  const f = fixture(),
-    { owner, phone, target } = await f.setup()
-  assert.equal(
-    (
-      await f.send("sesion", phone, {
-        operation: "pair",
-        pair: owner.pair,
-        sender: "b".repeat(64),
-      })
-    ).status,
-    409,
-  )
-  const scan = {
-    id: crypto.randomUUID(),
-    contextId: target.id,
-    code: "0001234567890",
+async function fixture(t) {
+  const network = new FakePeerNetwork()
+  const storage = new MemoryScannerStorage()
+  let now = Date.now()
+  const options = {
+    storage,
+    clock: () => now,
+    createPeer: network.createPeer,
+    origin: () => "https://shop.example",
   }
-  assert.equal(
-    (await f.send("eventos", phone, { operation: "scan", scan })).status,
-    202,
-  )
-  assert.equal(
-    (await f.send("eventos", phone, { operation: "scan", scan })).status,
-    200,
-  )
-  const state = await f.request("eventos", phone, undefined, {
-    eventId: scan.id,
-  })
-  assert.equal(state.result, undefined)
-  assert.equal((await f.request("eventos", owner)).pending.code, scan.code)
-  const result = {
-    ...scan,
-    outcome: "selected",
-    message: "Producto seleccionado",
-  }
-  await f.request("eventos", owner, { operation: "result", result })
-  assert.deepEqual(
-    (await f.request("eventos", phone, undefined, { eventId: scan.id })).result,
-    result,
-  )
-  assert.deepEqual(
-    (await f.request("eventos", phone, { operation: "scan", scan })).result,
-    result,
-  )
-  assert.equal(
-    (
-      await f.send("eventos", phone, {
-        operation: "scan",
-        scan: { ...scan, code: "another" },
-      })
-    ).status,
-    409,
-  )
-})
-
-test("stale targets, out-of-order updates, heartbeat loss and closing prevent delivery to later operations", async () => {
-  const f = fixture(),
-    { owner, phone, target } = await f.setup()
-  const scan = {
-    id: crypto.randomUUID(),
-    contextId: target.id,
-    code: "DEMO-000001",
-  }
-  await f.request("eventos", phone, { operation: "scan", scan })
-  await f.request("sesion", owner, {
-    operation: "heartbeat",
-    version: 3,
-    target: null,
-  })
-  assert.equal(
-    (await f.request("eventos", phone, undefined, { eventId: scan.id })).result
-      .outcome,
-    "paused",
-  )
-  await f.request("sesion", owner, {
-    operation: "heartbeat",
-    version: 2,
-    target,
-  })
-  assert.equal((await f.request("eventos", phone)).accepting, false)
-  const next = { id: crypto.randomUUID(), kind: "purchase" }
-  await f.request("sesion", owner, {
-    operation: "heartbeat",
-    version: 4,
-    target: next,
-  })
-  assert.equal(
-    (
-      await f.send("eventos", phone, {
-        operation: "scan",
-        scan: { ...scan, id: crypto.randomUUID() },
-      })
-    ).status,
-    409,
-  )
-  f.advance(30001)
-  assert.equal(
-    (
-      await f.send("eventos", phone, {
-        operation: "scan",
-        scan: { ...scan, id: crypto.randomUUID(), contextId: next.id },
-      })
-    ).status,
-    409,
-  )
-  f.advance(30000)
-  assert.equal((await f.send("eventos", phone)).status, 410)
-})
-
-test("QR expires while laptop remains alive; invalid credentials, foreign origins, payloads and Redis failure are rejected", async () => {
-  const f = fixture(),
-    owner = await f.request("sesion", undefined, { operation: "create" })
-  for (let i = 1; i <= 9; i++) {
-    f.advance(15000)
-    await f.request("sesion", owner, {
-      operation: "heartbeat",
-      version: i,
-      target: null,
-    })
-  }
-  assert.equal(
-    (
-      await f.send("sesion", owner, {
-        operation: "pair",
-        pair: owner.pair,
-        sender: "a".repeat(64),
-      })
-    ).status,
-    410,
-  )
-  assert.equal(
-    (
-      await f.send(
-        "sesion",
-        owner,
-        { operation: "heartbeat", version: 10, target: null },
-        { Origin: "https://other.example" },
-      )
-    ).status,
-    403,
-  )
-  assert.equal(
-    (await f.send("eventos", { ...owner, token: "b".repeat(64) })).status,
-    401,
-  )
-  assert.equal(
-    (
-      await f.send("eventos", owner, {
-        operation: "scan",
-        scan: {
-          id: crypto.randomUUID(),
-          contextId: crypto.randomUUID(),
-          code: "x".repeat(129),
-        },
-      })
-    ).status,
-    400,
-  )
-  f.store.unavailable = true
-  assert.equal((await f.send("eventos", owner)).status, 503)
-  assert.equal(
-    (await scannerApiFromEnv({})(new Request(origin), "lector-sesion")).status,
-    503,
-  )
-})
-
-test("permissions separate phone and laptop; session close is immediate and creation is rate limited", async () => {
-  const f = fixture(),
-    { owner, phone, target } = await f.setup()
-  assert.equal(
-    (
-      await f.send("sesion", phone, {
-        operation: "heartbeat",
-        version: 2,
-        target,
-      })
-    ).status,
-    403,
-  )
-  assert.equal(
-    (
-      await f.send("eventos", owner, {
-        operation: "scan",
-        scan: { id: crypto.randomUUID(), contextId: target.id, code: "123" },
-      })
-    ).status,
-    403,
-  )
-  await f.request("sesion", phone, { operation: "close" })
-  assert.equal((await f.send("eventos", owner)).status, 410)
-  for (let i = 0; i < 28; i++)
-    await f.request("sesion", undefined, { operation: "create" })
-  assert.equal(
-    (await f.send("sesion", undefined, { operation: "create" })).status,
-    429,
-  )
-})
-
-test("desktop and phone perform a complete scan with actual Lua and preserve selection on lost acknowledgement", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
-  const previousWindow = globalThis.window
-  globalThis.window = { location: { origin } }
-  t.after(() => {
-    if (previousWindow === undefined) delete globalThis.window
-    else globalThis.window = previousWindow
-  })
-  const f = fixture()
-  let failReceipt = true,
-    applications = 0
-  const desktop = new DesktopScanner(async (...args) => {
-    if (args[2]?.operation === "result" && failReceipt) {
-      failReceipt = false
-      throw Error("Response lost")
-    }
-    return f.request(...args)
-  })
+  const desktop = new DesktopScanner(options)
+  const phones = []
+  let calls = 0
+  const target = { id: crypto.randomUUID(), kind: "sale" }
   desktop.setConsumer({
-    target: { id: crypto.randomUUID(), kind: "sale" },
+    target,
     read: (scan) => {
-      applications++
+      calls++
       return { ...scan, outcome: "selected", message: "Producto seleccionado" }
     },
   })
-  const phone = new PhoneScanner(new MemoryStorage(), f.request)
-  try {
-    await desktop.link()
-    await flush()
-    phone.start(new URL(desktop.getSnapshot().url).hash)
-    await flush()
-    assert.equal(phone.getSnapshot().accepting, true)
-    phone.scan("DEMO-000001")
-    await flush()
-    assert.equal(phone.getSnapshot().result, null)
-    t.mock.timers.tick(1000)
-    await flush()
-    assert.equal(applications, 1)
-    for (let i = 0; i < 3; i++) {
-      t.mock.timers.tick(2000)
-      await flush()
-    }
-    assert.equal(applications, 1)
-    assert.equal(phone.getSnapshot().result.outcome, "selected")
-    phone.scan("DEMO-000001")
-    await flush()
-    assert.equal(phone.getSnapshot().busy, false)
-    desktop.setConsumer(null)
-    await flush()
-    t.mock.timers.tick(2000)
-    await flush()
-    assert.equal(phone.getSnapshot().accepting, false)
-  } finally {
-    phone.stop()
-    await desktop.disconnect()
+  await desktop.link()
+  await flush()
+  function phone(
+    link = desktop.getSnapshot().url,
+    phoneStorage = new MemoryScannerStorage(),
+  ) {
+    const reader = new PhoneScanner(phoneStorage, {
+      clock: () => now,
+      createPeer: network.createPeer,
+      retryMs: 1,
+    })
+    phones.push(reader)
+    reader.start(new URL(link).hash)
+    return reader
   }
+  t.after(() => {
+    for (const reader of phones) reader.stop()
+    desktop.stop()
+  })
+  return {
+    network,
+    storage,
+    desktop,
+    options,
+    phone,
+    target,
+    advance: (ms) => {
+      now += ms
+    },
+    count: () => calls,
+  }
+}
+
+test("QR URL contains only fragment credentials, lasts exactly eight hours and is reused", async (t) => {
+  const f = await fixture(t)
+  const first = f.desktop.getSnapshot()
+  const url = new URL(first.url)
+  assert.equal(url.pathname, "/lector")
+  assert.equal(url.search, "")
+  assert.equal(url.hash.includes("token="), true)
+  const saved = JSON.parse(f.storage.getItem(desktopStorageKey))
+  assert.equal(saved.expiresAt - f.options.clock(), SCANNER_LIFETIME)
+  assert.equal(
+    Number(new URLSearchParams(url.hash.slice(1)).get("expires")),
+    saved.expiresAt,
+  )
+  f.advance(3600000)
+  await f.desktop.link()
+  assert.equal(f.desktop.getSnapshot().url, first.url)
+  assert.equal(f.desktop.getSnapshot().expiresAt, first.expiresAt)
+  assert.equal(SCANNER_LIFETIME, 28800000)
 })
 
-test("request wrapper preserves global fetch receiver and code validation preserves leading zeros", async (t) => {
-  t.mock.method(globalThis, "fetch", async function (path, options) {
-    assert.equal(this, globalThis)
-    assert.equal(options.cache, "no-store")
-    return Response.json({ ok: true })
-  })
-  assert.deepEqual(
-    await scannerRequest("sesion", undefined, { operation: "create" }),
-    { ok: true },
+test("reload restores the same link and stale StrictMode initialization cannot destroy the replacement", async (t) => {
+  const f = await fixture(t)
+  const link = f.desktop.getSnapshot().url
+  f.desktop.stop()
+  const restored = new DesktopScanner(f.options)
+  t.after(() => restored.stop())
+  const initial = restored.resume()
+  restored.stop()
+  await restored.resume()
+  await initial
+  await flush()
+  assert.equal(restored.getSnapshot().url, link)
+  assert.equal(
+    f.network.peers.has(
+      JSON.parse(f.storage.getItem(desktopStorageKey)).sessionId,
+    ),
+    true,
   )
-  assert.equal(validScannerCode("0000123456789"), true)
-  for (const code of ["", " 123", "x".repeat(129), "123\n"])
+  assert.equal(restored.getSnapshot().linking, false)
+})
+
+test("two browser controllers select a product and acknowledge exactly once", async (t) => {
+  const f = await fixture(t),
+    phone = f.phone()
+  await flush()
+  assert.equal(f.desktop.getSnapshot().paired, true)
+  assert.equal(phone.getSnapshot().accepting, true)
+  assert.equal(phone.getSnapshot().kind, "sale")
+  phone.scan("000123")
+  assert.equal(phone.getSnapshot().result, null)
+  await flush()
+  assert.equal(f.count(), 1)
+  assert.equal(phone.getSnapshot().result.outcome, "selected")
+  phone.scan("000123")
+  await flush()
+  assert.equal(f.count(), 1)
+  assert.equal(
+    f.network.frames.some(
+      (frame) => frame.data.type === "hello" && frame.data.token,
+    ),
+    true,
+  )
+})
+
+test("lost confirmation retries the same ID without applying the selection again", async (t) => {
+  const f = await fixture(t),
+    phone = f.phone()
+  await flush()
+  f.network.drop = (data) => data.type === "result"
+  phone.scan("PACK-000001")
+  await flush()
+  assert.equal(f.count(), 1)
+  assert.equal(phone.getSnapshot().busy, true)
+  assert.equal(phone.getSnapshot().result, null)
+  f.network.drop = undefined
+  f.network.replay("scan")
+  await flush()
+  assert.equal(f.count(), 1)
+  assert.equal(phone.getSnapshot().busy, false)
+  assert.equal(phone.getSnapshot().result.code, "PACK-000001")
+})
+
+test("pausing and changing operation rejects old frames and resets the scan latch", async (t) => {
+  const f = await fixture(t),
+    phone = f.phone()
+  await flush()
+  phone.scan("DEMO-000001")
+  await flush()
+  f.desktop.setConsumer(null)
+  await flush()
+  assert.equal(phone.getSnapshot().accepting, false)
+  phone.scan("OTHER")
+  await flush()
+  assert.equal(f.count(), 1)
+  const target = { id: crypto.randomUUID(), kind: "purchase" }
+  f.desktop.setConsumer({
+    target,
+    read: (scan) => ({
+      ...scan,
+      outcome: "already-selected",
+      message: "Ya seleccionado",
+    }),
+  })
+  await flush()
+  assert.equal(phone.getSnapshot().kind, "purchase")
+  f.network.replay("scan")
+  await flush()
+  assert.equal(f.count(), 1)
+  phone.scan("DEMO-000001")
+  await flush()
+  assert.equal(phone.getSnapshot().result.contextId, target.id)
+  assert.equal(phone.getSnapshot().result.outcome, "already-selected")
+})
+
+test("unprocessed old operation cannot select a product in a new operation", async (t) => {
+  const f = await fixture(t),
+    phone = f.phone()
+  await flush()
+  f.network.drop = (data) => data.type === "scan"
+  phone.scan("DEMO-000001")
+  await flush()
+  f.network.drop = undefined
+  f.desktop.setConsumer({
+    target: { id: crypto.randomUUID(), kind: "purchase" },
+    read: () => {
+      throw Error("Old frame reached new consumer")
+    },
+  })
+  await flush()
+  assert.equal(phone.getSnapshot().result.outcome, "paused")
+  assert.equal(f.count(), 0)
+})
+
+test("wrong secret and a second phone cannot take over the paired connection", async (t) => {
+  const f = await fixture(t)
+  const bad = new URL(f.desktop.getSnapshot().url)
+  const params = new URLSearchParams(bad.hash.slice(1))
+  params.set("token", "0".repeat(64))
+  bad.hash = params.toString()
+  const invalid = f.phone(bad.href)
+  await flush()
+  assert.match(invalid.getSnapshot().message, /no es válido/)
+  assert.equal(f.desktop.getSnapshot().paired, false)
+  const first = f.phone()
+  await flush()
+  const second = f.phone()
+  await flush()
+  assert.equal(first.getSnapshot().connected, true)
+  assert.match(second.getSnapshot().message, /otro teléfono/)
+  assert.equal(f.desktop.getSnapshot().paired, true)
+  second.scan("DEMO-000001")
+  await flush()
+  assert.equal(f.count(), 0)
+})
+
+test("another desktop tab fails visibly instead of silently rotating or taking the link", async (t) => {
+  const f = await fixture(t)
+  const duplicate = new DesktopScanner(f.options)
+  t.after(() => duplicate.stop())
+  await duplicate.resume()
+  await flush()
+  assert.equal(duplicate.getSnapshot().url, f.desktop.getSnapshot().url)
+  assert.match(duplicate.getSnapshot().message, /otra pestaña/)
+  const phone = f.phone()
+  await flush()
+  phone.scan("DEMO-000001")
+  await flush()
+  assert.equal(f.count(), 1)
+})
+
+test("reconnection preserves link, deadline and pending scan ID", async (t) => {
+  const f = await fixture(t),
+    phone = f.phone()
+  await flush()
+  f.network.drop = (data) => data.type === "result"
+  phone.scan("DEMO-000001")
+  await flush()
+  const originalScan = f.network.frames.find(
+    (frame) => frame.data.type === "scan",
+  ).data.scan
+  const client = f.network.frames.find((frame) => frame.data.type === "hello")
+    .connection.owner
+  f.network.drop = undefined
+  client.destroy()
+  await flush()
+  await flush()
+  assert.equal(phone.getSnapshot().connected, true)
+  assert.equal(phone.getSnapshot().result.id, originalScan.id)
+  assert.equal(f.count(), 1)
+})
+
+test("expired desktop rejects a raw scan and generates a different eight-hour link only on demand", async (t) => {
+  const f = await fixture(t),
+    phone = f.phone()
+  await flush()
+  const old = f.desktop.getSnapshot().url
+  f.advance(SCANNER_LIFETIME)
+  const connection = f.network.frames.find(
+    (frame) => frame.data.type === "hello",
+  ).connection
+  connection.send({
+    type: "scan",
+    scan: {
+      id: crypto.randomUUID(),
+      code: "DEMO-000001",
+      contextId: f.target.id,
+    },
+  })
+  await flush()
+  assert.equal(f.count(), 0)
+  assert.equal(f.desktop.getSnapshot().paired, false)
+  assert.match(f.desktop.getSnapshot().message, /venció/)
+  await f.desktop.link()
+  await flush()
+  assert.notEqual(f.desktop.getSnapshot().url, old)
+  const expired = f.phone(old)
+  await flush()
+  assert.equal(expired.getSnapshot().connected, false)
+  assert.match(expired.getSnapshot().message, /venció/)
+  phone.stop()
+})
+
+test("explicit disconnect revokes the saved session; storage never contains barcodes", async (t) => {
+  const f = await fixture(t)
+  const storage = new MemoryScannerStorage()
+  const phone = f.phone(undefined, storage)
+  await flush()
+  phone.scan("PRIVATE-CODE-123")
+  await flush()
+  assert.equal(
+    [...storage.values.values()].some((value) =>
+      value.includes("PRIVATE-CODE"),
+    ),
+    false,
+  )
+  assert.equal(
+    [...f.storage.values.values()].some((value) =>
+      value.includes("PRIVATE-CODE"),
+    ),
+    false,
+  )
+  await phone.disconnect()
+  await new Promise((resolve) => setTimeout(resolve, 130))
+  assert.equal(f.storage.getItem(desktopStorageKey), null)
+  assert.equal(storage.getItem(phoneStorageKey), null)
+  assert.equal(f.desktop.getSnapshot().paired, false)
+})
+
+test("invalid, legacy and expired links fail clearly and manual code validation preserves leading zeros", () => {
+  const storage = new MemoryScannerStorage(),
+    reader = new PhoneScanner(storage)
+  reader.start("#session=invalid&pair=old")
+  assert.match(reader.getSnapshot().message, /anterior/)
+  assert.equal(validScannerCode("000123"), true)
+  for (const code of ["", " ", " a", "a\n", "\u0000", "a".repeat(129), 123])
     assert.equal(validScannerCode(code), false)
 })
 
-test("receipts remain idempotent after more than fifty scans and expire with the session", async () => {
-  const f = fixture(),
-    { owner, phone, target } = await f.setup()
-  let first
-  for (let i = 0; i < 55; i++) {
-    const scan = {
-      id: crypto.randomUUID(),
-      contextId: target.id,
-      code: "000" + i,
-    }
-    first ??= scan
-    await f.request("eventos", phone, { operation: "scan", scan })
-    await f.request("eventos", owner, {
-      operation: "result",
-      result: { ...scan, outcome: "selected", message: "Seleccionado" },
-    })
-  }
-  f.advance(45000)
-  await f.request("sesion", owner, {
-    operation: "heartbeat",
-    version: 2,
-    target,
-  })
-  f.advance(20000)
-  assert.equal(
-    (await f.request("eventos", phone, { operation: "scan", scan: first }))
-      .result.id,
-    first.id,
-  )
-  assert.equal((await f.request("eventos", owner)).pending, null)
-  await f.request("sesion", owner, { operation: "close" })
-  assert.equal(f.store.values.has("receipts:" + owner.sessionId), false)
-})
-
-test("phone restores the same pending identifier after a lost response and never overlaps requests", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
-  const f = fixture(),
-    { owner, phone: credentials, target } = await f.setup(),
-    storage = new MemoryStorage()
-  storage.setItem("miabarrote:phone-reader", JSON.stringify({ credentials }))
-  let active = 0,
-    maxActive = 0,
-    lose = true,
-    scanId
-  const request = async (...args) => {
-    active++
-    maxActive = Math.max(maxActive, active)
-    try {
-      const result = await f.request(...args)
-      if (args[2]?.operation === "scan") {
-        if (scanId) assert.equal(args[2].scan.id, scanId)
-        scanId = args[2].scan.id
-        if (lose) {
-          lose = false
-          throw Error("Accepted, response lost")
-        }
-      }
-      return result
-    } finally {
-      active--
-    }
-  }
-  const first = new PhoneScanner(storage, request)
-  first.start()
-  await flush()
-  first.scan("0123456789012")
-  first.scan("another")
-  await flush()
-  t.mock.timers.tick(30000)
-  await flush()
-  assert.ok(scanId)
-  assert.equal(first.getSnapshot().accepting, true)
-  assert.equal(first.getSnapshot().result, null)
-  first.stop()
-  const restored = new PhoneScanner(storage, request)
-  try {
-    restored.start()
-    await flush()
-    const pending = (await f.request("eventos", owner)).pending
-    assert.equal(pending.id, scanId)
-    await f.request("eventos", owner, {
-      operation: "result",
-      result: { ...pending, outcome: "unknown", message: "Código desconocido" },
-    })
-    t.mock.timers.tick(2000)
-    await flush()
-    assert.equal(restored.getSnapshot().result.outcome, "unknown")
-    restored.scan(pending.code)
-    await flush()
-    // Reload can reset the camera latch; after confirmation, holding the same code is suppressed.
-    t.mock.timers.tick(2000)
-    await flush()
-    restored.scan(pending.code)
-    await flush()
-    assert.equal(maxActive, 1)
-  } finally {
-    restored.stop()
-    await f.request("sesion", owner, { operation: "close" })
+test("reader entry point and transport have no scanner HTTP calls or Redis requirement", async () => {
+  for (const file of [
+    "DesktopScanner",
+    "PhoneScanner",
+    "PeerTransport",
+    "PhoneReaderButton",
+  ]) {
+    const source = await readFile(
+      new URL(
+        "../src/features/scanner/" +
+          file +
+          (file === "PhoneReaderButton" ? ".tsx" : ".ts"),
+        import.meta.url,
+      ),
+      "utf8",
+    )
+    assert.equal(source.includes("/api/lector-"), false)
+    assert.equal(source.includes("scannerRequest"), false)
   }
 })
 
-test("rapid link clicks create one session; disconnect cancels creation and stale work", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
-  const previousWindow = globalThis.window
-  globalThis.window = { location: { origin } }
-  t.after(() => {
-    if (previousWindow === undefined) delete globalThis.window
-    else globalThis.window = previousWindow
+test("invalid stored metadata can be replaced without configuring any service", async (t) => {
+  const network = new FakePeerNetwork(),
+    storage = new MemoryScannerStorage()
+  storage.setItem(desktopStorageKey, "{broken")
+  const desktop = new DesktopScanner({
+    storage,
+    createPeer: network.createPeer,
+    origin: () => "https://shop.example",
   })
-  let creates = 0,
-    release
-  const wait = new Promise((resolve) => {
-    release = resolve
-  })
-  const desktop = new DesktopScanner(async (route, credentials, body) => {
-    if (body?.operation === "create") {
-      creates++
-      await wait
-      return {
-        sessionId: crypto.randomUUID(),
-        token: "a".repeat(64),
-        pair: "b".repeat(64),
-        pairUntil: Date.now() + 120000,
-      }
-    }
-    return { paired: false, accepting: false, target: null }
-  })
-  const linking = desktop.link()
+  t.after(() => desktop.stop())
+  await desktop.resume()
   await desktop.link()
-  await flush()
-  assert.equal(creates, 1)
-  await desktop.disconnect()
-  release()
-  await linking
+  assert.equal(new URL(desktop.getSnapshot().url).pathname, "/lector")
+  assert.ok(JSON.parse(storage.getItem(desktopStorageKey)).token)
+})
+
+test("storage denied reports recovery guidance and does not create a misleading temporary link", async () => {
+  const desktop = new DesktopScanner({
+    storage: {
+      getItem() {
+        throw Error("Storage denied")
+      },
+    },
+  })
+  await desktop.link()
   assert.equal(desktop.getSnapshot().url, "")
+  assert.match(desktop.getSnapshot().message, /almacenamiento/)
+  desktop.stop()
 })

@@ -1,91 +1,67 @@
-# Usar tu teléfono como lector de barras
+# Usar el teléfono como lector con un enlace de 8 horas
 
-Abre MiAbarrote en la laptop, vincula el teléfono con el QR y escanea los envases desde el navegador del teléfono. Sirve en el primer paso de ventas y compras. No requiere instalar aplicaciones ni programas en Windows.
+La computadora genera un QR y un enlace. El teléfono abre el lector desde ese enlace y envía los códigos a la venta o compra que esté abierta en la computadora. El lector usa PeerJS: no requiere Redis, variables de entorno ni instalar una aplicación.
 
 ## Primera prueba
 
-1. En la laptop abre [MiAbarrote](https://mi-abarrote.vercel.app/), inicia sesión y entra a **Ventas → Registrar venta** o **Compras → Registrar compra**.
-2. En el primer paso pulsa **Usar teléfono como lector**. Aparece un QR válido durante dos minutos.
-3. En el teléfono usa la cámara o la opción de leer QR y abre el enlace. Comprueba que pertenece al mismo sitio de MiAbarrote. La página del lector no pide el login demostrativo.
-4. En la laptop, cuando indique **Teléfono conectado**, pulsa **Continuar** para cerrar el diálogo del QR. Con el diálogo abierto la selección permanece pausada.
-5. En el teléfono pulsa **Iniciar cámara** y permite el acceso. Se solicita preferentemente la cámara trasera. Abre el enlace en Chrome Android si la aplicación que leyó el QR tiene un navegador interno que impide utilizar la cámara.
-6. Apunta al código de barras de un producto **registrado en el catálogo**. Deja margen blanco alrededor, buena luz y enfoca a unos 15–25 cm; ajusta la distancia hasta que se lea.
-7. Espera la confirmación en el teléfono. El producto debe aparecer seleccionado y fijado al principio de la lista en la laptop. Un código desconocido muestra un aviso; no crea productos automáticamente.
+1. Conecta el teléfono y la computadora a la misma Wi-Fi. Abre la versión publicada de MiAbarrote por HTTPS en la computadora.
+2. Inicia sesión y entra a **Ventas → Registrar venta** o **Compras → Registrar compra**.
+3. En el primer paso pulsa **Usar teléfono como lector**. Aparecen el QR, el enlace para copiar y la hora de vencimiento.
+4. Escanea el QR con el teléfono, o copia el enlace y ábrelo en su navegador. La página móvil no pide iniciar sesión.
+5. Cuando la computadora indique **Teléfono conectado**, pulsa **Continuar**. El diálogo del QR pausa la selección mientras está abierto.
+6. En el teléfono pulsa **Iniciar cámara** y permite el acceso. Se intenta usar la cámara trasera. Utiliza Chrome Android si el navegador interno de la aplicación que leyó el QR impide abrirla.
+7. Escanea un código registrado en el catálogo y espera la confirmación. El producto se selecciona en la computadora y permanece al principio de la lista.
 
-Los datos demostrativos usan códigos como `DEMO-000001` y `PACK-000001`. El código impreso en un envase real solo encontrará el producto si ese mismo código fue registrado en el catálogo. Para la primera prueba puedes registrar el código real de un producto desde la gestión de productos, o mostrar una etiqueta Code 128 que contenga uno de los códigos demostrativos.
+Para una prueba con un envase real, registra su código impreso en el catálogo. Los datos demo incluyen códigos como DEMO-000001 y PACK-000001: un envase con otro código mostrará **Código no encontrado**.
 
-La selección suele confirmarse en unos segundos, dependiendo de la red. El teléfono muestra éxito después de recibir la confirmación de la laptop. Las imágenes de la cámara no salen del teléfono; solo se transmite el código.
-
-## Qué sucede al escanear
+## Qué se conserva durante 8 horas
 
 | Situación | Resultado |
 | --- | --- |
-| Producto conocido | Se selecciona y queda fijado al principio del catálogo. |
-| Producto ya seleccionado | Se confirma la selección; conserva cantidades y presentación. |
-| Código de paquete | Selecciona el producto correspondiente. La presentación se configura en el segundo paso. |
-| Código desconocido | Aparece un aviso en ambos dispositivos. |
-| Venta sin stock vendible | Se informa del problema y no se selecciona el producto. |
-| Mismo código sostenido ante la cámara | Se evita enviarlo continuamente. Usa **Volver a leer** o apunta a otro código para habilitar otra lectura. |
-| Paso 2, diálogo superpuesto o pestaña de laptop oculta | El lector queda pausado. |
-| Cancelar o terminar la operación | Conserva la vinculación; abre la siguiente venta o compra para seguir. |
-| Desconectar, cerrar sesión o recargar laptop | Hace falta un nuevo QR. Cerrar la pestaña deja caducar la sesión en un máximo de 60 segundos. |
-| Recargar teléfono | Recupera la vinculación desde esa pestaña, si la laptop sigue conectada; pulsa otra vez **Iniciar cámara**. |
+| Cerrar el diálogo del QR | El teléfono permanece conectado. |
+| Cambiar de venta a compra | Se conserva el enlace; el lector sigue la nueva operación abierta. |
+| Avanzar al segundo paso o cerrar la selección | El teléfono queda pausado. |
+| Recargar la computadora | El enlace y su vencimiento se conservan. Inicia sesión nuevamente para retomar la conexión. Las ventas e inventario se reinician como antes. |
+| Cortar la Wi-Fi | Se intenta reconectar con el mismo enlace; una lectura sin confirmar conserva su identificador mientras la página del teléfono siga abierta. |
+| Cerrar sesión o pulsar Desconectar teléfono | Se invalida la vinculación y se necesita un enlace nuevo. |
+| Cumplirse 8 horas desde la generación | Se bloquean las lecturas. Genera otro enlace y QR. Reconectar no extiende la duración. |
 
-Puedes mantener el lector USB y la entrada manual. El lector del teléfono no necesita que ambos dispositivos estén en la misma Wi-Fi: ambos necesitan internet. Se admite un teléfono por pestaña de laptop; otra pestaña crea una vinculación independiente.
+La vinculación se guarda en localStorage de cada navegador. No se guardan allí ventas, inventario, imágenes ni códigos escaneados. Solo puede conectarse un teléfono a la vez. Una segunda pestaña de computadora no toma la vinculación de la primera: cierra la anterior antes de reintentar.
 
-## Resolver problemas
+Un código repetido confirma que el producto ya está seleccionado; no aumenta cantidades ni lo desmarca. **Volver a leer** permite leer nuevamente el mismo código. Un código desconocido o sin stock vendible muestra su aviso correspondiente.
 
-| Mensaje o síntoma | Qué hacer |
-| --- | --- |
-| QR vencido | Pulsa **Generar QR** en la laptop y abre el nuevo enlace. |
-| Ya hay otro teléfono vinculado | Desconecta la vinculación anterior desde la laptop y genera otro QR. |
-| Lector pausado | Cierra el diálogo del QR y deja visible el primer paso de venta o compra en la laptop. |
-| Permiso de cámara denegado | En Chrome abre los permisos de este sitio, permite Cámara y vuelve a pulsar **Iniciar cámara**. |
-| No se puede abrir cámara | Cierra otras aplicaciones que la usen. Usa HTTPS; una dirección local HTTP de la laptop normalmente no permite cámara en el teléfono. |
-| Código desconocido | Compara el código registrado del producto/paquete con los dígitos del envase, incluidos ceros iniciales. |
-| Esperando confirmación | No acumules escaneos. Revisa internet y vuelve al primer paso. Si se agotó la sesión, vincula de nuevo. |
-| Configura Redis o lector no disponible | Revisa las variables privadas y disponibilidad de Upstash descritas abajo. |
+## Conexión y problemas frecuentes
 
-Las lecturas pendientes pertenecen a una selección concreta. Al cambiar de operación o regresar al paso 1 se crea otro contexto; una lectura antigua se descarta y debe repetirse.
+- **Localhost:** un enlace que contiene localhost o 127.0.0.1 apunta al propio dispositivo que lo abre. Para la prueba entre dispositivos usa el despliegue HTTPS de Vercel; la cámara del teléfono necesita un contexto seguro.
+- **Esperando computadora:** comprueba que la computadora tenga la aplicación abierta y la sesión iniciada. Abre el primer paso de una venta o compra y cierra el diálogo del QR.
+- **No conecta:** comprueba Internet y que ambos equipos estén en la misma Wi-Fi. Las redes de invitados pueden aislar dispositivos. Pulsa **Reintentar conexión** en la computadora o vuelve a abrir el enlace en el teléfono.
+- **Otra pestaña:** cierra la pestaña anterior que mantiene la vinculación y reintenta con el mismo enlace.
+- **Otro teléfono conectado:** cierra su página para liberar la conexión. Si pulsas **Desconectar teléfono**, se revoca el enlace y debes generar otro.
+- **Cámara denegada:** permite el acceso desde los ajustes del sitio. Cierra otras aplicaciones que utilicen la cámara y vuelve a pulsar **Iniciar cámara**.
+- **Enlace anterior o vencido:** genera uno nuevo. Los enlaces de la versión antigua basada en Redis no son compatibles.
 
-## Configuración en Vercel y Netlify
+Esta versión utiliza el servicio público gratuito de señalización de PeerJS y un servidor STUN. Después del enlace, los códigos viajan mediante un canal de datos WebRTC. No se configura TURN: una red que impida la conexión directa puede necesitar un servicio de retransmisión adicional. Véase la [documentación oficial de PeerJS](https://peerjs.com/server/getting-started).
 
-El lector reutiliza las variables privadas ya utilizadas por los pagos:
+## Publicación y mantenimiento
 
-| Variable | Uso |
-| --- | --- |
-| `UPSTASH_REDIS_REST_URL` | Dirección HTTPS de la API REST de Redis. |
-| `UPSTASH_REDIS_REST_TOKEN` | Token privado con permisos de lectura/escritura y ejecución de scripts. |
-| `PAYMENT_NAMESPACE` | Separa producción y entornos de pruebas; por defecto `miabarrote`. |
+Vercel conserva la configuración existente: Node 22, instalación con npm ci, compilación con npm run build y salida dist. La ruta /lector se resuelve mediante la navegación SPA. El lector no utiliza funciones /api/lector-*, Redis ni variables VITE_*.
 
-No hay nuevas claves que el cajero deba copiar. Las claves de MacroDroid y sesión de pagos son independientes. Nunca copies tokens Redis en variables `VITE_*`, URLs o código del navegador.
+Los servicios de pagos mantienen su configuración independiente. Quitar Redis del lector no elimina las variables que necesite la integración real de pagos.
 
-**Vercel:** conserva la raíz actual del proyecto, Node 22, instalación `npm ci`, compilación `npm run build` y salida `dist`. El repositorio contiene las funciones `/api/lector-sesion` y `/api/lector-eventos` y la regla que envía `/lector` a la aplicación. Si Redis ya funciona en pagos, no necesitas crear otro servicio. Tras cambiar variables, despliega otra vez para aplicarlas; comprueba que estén disponibles en **Production**. Los previews deben utilizar otro namespace.
+El QR se genera localmente con qrcode. La cámara se decodifica localmente con ZXing y solo se transmite el código. El secreto de vinculación viaja en el fragmento del enlace y se valida en el canal de datos antes de aceptar lecturas. El teléfono retira el fragmento de la barra tras guardar la vinculación.
 
-**Netlify:** el archivo `netlify.toml` conserva Node 22, compilación/salida y `netlify/functions`. Las dos funciones usan la misma API pública, con rutas declaradas en cada adaptador. Añade las tres variables privadas al entorno de Functions y vuelve a desplegar. El manejo de la API se comparte con Vercel y el servidor local.
+Cada lectura tiene identificador y contexto de operación. La computadora conserva temporalmente el resultado para responder reintentos sin repetir la selección. Las lecturas de una operación anterior no se aplican a otra. La caducidad se comprueba al conectar, al leer y mediante temporizadores, sin extender el vencimiento.
 
-**Desarrollo local:** copia `.env.example` a `.env.local`, completa únicamente las variables privadas necesarias y ejecuta `npm run dev`. No publiques ese archivo. El servidor Vite usa los mismos handlers. Para probar la cámara desde otro dispositivo necesitas servir la página mediante HTTPS; la verificación más sencilla es el despliegue de Vercel.
+Para verificar cambios:
 
-No hay licencia ni cupo artificial por lectura. Las consultas generan consumo en el alojamiento y en Redis: laptop cada segundo durante selección y teléfono cada dos segundos; el latido se mantiene cada 15 segundos. Los errores introducen espera progresiva hasta 30 segundos. Una sesión deja de aceptar lecturas tras más de 30 segundos sin latido y caduca tras 60. Desconectar elimina sus claves y detiene las consultas. Un QR sin utilizar también detiene la vinculación al vencer. [Vercel Hobby está destinado a uso personal no comercial](https://vercel.com/docs/limits/fair-use-guidelines); para operar comercialmente la tienda elige un plan o alojamiento permitido.
+- Ejecuta npm test, npm run typecheck y npm run build.
+- Con Vite abierto, visita /tests/remoteScanner.browser.html para las comprobaciones de interfaz con transporte simulado.
+- Prueba dos navegadores reales mediante /tests/remoteScanner.browser.html?live=1 para escritorio y el enlace /lector generado para el teléfono; el modo live utiliza PeerJS real y muestra el catálogo demostrativo.
+- Para ensayar señalización, envío, pausa y reconexión sin cámara, abre /tests/remoteScanner.browser.html?live=real en un navegador con WebRTC. Este ensayo utiliza el servicio público real y no forma parte de las pruebas simuladas.
+- Antes de considerar validado un teléfono físico, prueba el despliegue HTTPS, un código real registrado, su selección en la computadora, la pausa en el paso 2, la reconexión y la desconexión.
 
-## Contrato y mantenimiento
+Las pruebas simuladas no validan el permiso ni el enfoque de una cámara física. La aplicación conserva su login demostrativo y los datos comerciales permanecen en memoria.
 
-`POST /api/lector-sesion` acepta `create`, `pair`, `heartbeat` y `close`; `GET` devuelve el estado. `POST /api/lector-eventos` acepta `scan` y `result`; `GET` consulta el buzón y, con `eventId`, un resultado. Fuera de `create` y `pair`, se exige `sessionId` en la consulta y la credencial en `Authorization: Bearer …`. Los POST deben proceder del mismo origen y tener JSON de hasta 8 KB. Las respuestas no se almacenan en caché.
+El ensayo del canal real no pudo completarse en el navegador integrado del entorno de trabajo: la página se cerró inesperadamente durante WebRTC. Sigue pendiente la prueba con un teléfono físico y el despliegue HTTPS; no se considera validada por las pruebas simuladas.
 
-La laptop recibe una credencial de propietario y un secreto de vinculación de un solo uso. El secreto viaja en el fragmento `#…` del QR, que no se envía al servidor al navegar y se retira de la barra al abrir el lector. El teléfono genera su propia credencial antes de reclamar el enlace, permitiendo reintentar la misma vinculación si se pierde una respuesta. Redis guarda huellas SHA-256 de las credenciales. La credencial de laptop solo vive en memoria y la de teléfono en `sessionStorage`.
-
-Las claves `scanner:{namespace}:…` están separadas de los pagos. Un script Lua realiza de forma atómica vinculación, actualización de contexto, inserción y acuse. El hash de resultados conserva la deduplicación durante toda la sesión y comparte su caducidad. Los códigos se conservan como cadenas de 1–128 caracteres, incluidos sus ceros iniciales. Se admite una sola lectura pendiente y el teléfono reintenta su mismo identificador tras una respuesta perdida. El cliente de laptop conserva además el resultado de la aplicación local para no repetirla si falla el acuse.
-
-La página móvil carga `@zxing/browser` de forma diferida para EAN-13, EAN-8, UPC-A, UPC-E y Code 128. La laptop genera el QR con `qrcode`; no usa un servicio externo. [Documentación ZXing](https://github.com/zxing-js/browser), [funciones Vercel](https://vercel.com/docs/functions/runtimes/node-js), [funciones Netlify](https://docs.netlify.com/build/functions/api/).
-
-La aplicación sigue siendo un prototipo público con login demostrativo: la vinculación autoriza un canal de lectura y no sustituye una autenticación real del POS. Ventas e inventario permanecen en memoria; esta función no añade persistencia.
-
-## Verificación del equipo
-
-Ejecuta `npm test`, `npm run typecheck` y `npm run build`. Las pruebas de transporte ejecutan el script Lua de producción en un intérprete local, incluyendo vencimiento, dos teléfonos, reintentos, deduplicación, desconexión y Redis caído. Los adaptadores Vercel y Netlify se compilan y comparan sin credenciales. Con Vite abierto, visita `/tests/remoteScanner.browser.html` para la integración visual controlada y `/tests/productSelection.browser.html` para la regresión de selección manual y USB; estas páginas de prueba no forman parte de `dist`.
-
-`fengari` es una dependencia exclusiva de pruebas. Su dependencia `sprintf-js` tiene un aviso moderado sin versión corregida al comprobar esta implementación; solo se ejecutan scripts Lua propios, sin formatos proporcionados por usuarios. No se incluye en la aplicación ni en las funciones del servidor. Comprueba por separado `npm audit --omit=dev` para las dependencias publicadas.
-
-Antes de dar por validado un teléfono concreto, realiza la primera prueba con Chrome Android y una etiqueta real: permiso de cámara, selección en laptop, repetición sin cambiar cantidad, pausa al ir al paso 2, reanudación y desconexión. La simulación de red y las comprobaciones de navegador no sustituyen esta prueba con la cámara física.
-
-Para revertir esta incorporación se retiran los componentes `src/features/scanner`, sus integraciones en ventas/compras y App/main, los handlers/adaptadores de lector y sus dependencias/pruebas. Las rutas y el almacenamiento de pagos permanecen independientes.
+El límite de reversión de este cambio es el transporte y la interfaz del lector en src/features/scanner, sus tipos en src/data/remoteScanner.ts, el ciclo de vinculación en App y las pruebas/dependencias exclusivas del lector. Los handlers, almacenamiento y configuración de pagos quedan fuera de ese límite.

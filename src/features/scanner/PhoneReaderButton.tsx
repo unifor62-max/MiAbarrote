@@ -70,6 +70,7 @@ export default function PhoneReaderButton() {
   const [image, setImage] = useState("")
   const [qrError, setQrError] = useState("")
   const [now, setNow] = useState(Date.now())
+  const [copyNotice, setCopyNotice] = useState("")
   useEffect(() => {
     if (!open) return
     const timer = setInterval(() => setNow(Date.now()), 1000)
@@ -79,7 +80,8 @@ export default function PhoneReaderButton() {
     let valid = true
     setImage("")
     setQrError("")
-    if (open && state.url && !state.paired)
+    setCopyNotice("")
+    if (open && state.url)
       void import("qrcode")
         .then((module) =>
           module.toDataURL(state.url, {
@@ -100,7 +102,7 @@ export default function PhoneReaderButton() {
     return () => {
       valid = false
     }
-  }, [open, state.url, state.paired])
+  }, [open, state.url])
   return (
     <>
       <button
@@ -122,7 +124,7 @@ export default function PhoneReaderButton() {
         <ModalShell
           title="Vincular teléfono"
           description="Escanea este QR con la cámara de tu teléfono. No necesitas instalar una aplicación."
-          size="name"
+          size="product"
           onClose={() => setOpen(false)}
         >
           <div className="phone-pairing">
@@ -132,7 +134,7 @@ export default function PhoneReaderButton() {
                 {qrError}
               </p>
             )}
-            {!state.paired && state.pairUntil > now && image && (
+            {state.expiresAt > now && image && (
               <img
                 src={image}
                 alt="QR para abrir el lector en tu teléfono"
@@ -140,11 +142,54 @@ export default function PhoneReaderButton() {
                 height="280"
               />
             )}
-            {!state.paired && state.pairUntil > 0 && (
+            {state.expiresAt > now && state.url && (
+              <div className="phone-reader-link">
+                <label className="purchase-field" htmlFor="phone-reader-url">
+                  <span>Enlace para tu teléfono</span>
+                  <input
+                    id="phone-reader-url"
+                    type="text"
+                    readOnly
+                    value={state.url}
+                    onFocus={(event) => {
+                      const input = event.currentTarget
+                      input.select()
+                      requestAnimationFrame(() => { input.scrollLeft = 0 })
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="purchase-button purchase-button-secondary"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(state.url)
+                      setCopyNotice("Enlace copiado.")
+                    } catch {
+                      document.getElementById("phone-reader-url")?.focus()
+                      setCopyNotice("Selecciona y copia el enlace del campo.")
+                    }
+                  }}
+                >
+                  Copiar enlace
+                </button>
+                {copyNotice && <span role="status">{copyNotice}</span>}
+              </div>
+            )}
+            {state.expiresAt > 0 && (
               <p>
-                {state.pairUntil > now
-                  ? `QR válido por ${Math.min(120, Math.ceil((state.pairUntil - now) / 1000))} segundos.`
-                  : "El QR venció. Genera uno nuevo."}
+                {state.expiresAt > now
+                  ? `Mismo enlace durante 8 horas · quedan ${Math.floor((state.expiresAt - now) / 3600000)} h ${Math.floor(((state.expiresAt - now) % 3600000) / 60000)} min. Vence a las ${new Date(state.expiresAt).toLocaleTimeString("es-BO", { hour: "2-digit", minute: "2-digit", hour12: false })}.`
+                  : "El enlace venció. Genera uno nuevo."}
+              </p>
+            )}
+            {["localhost", "127.0.0.1", "[::1]"].includes(
+              window.location.hostname,
+            ) && (
+              <p className="phone-reader-local-note">
+                Estás en localhost: este enlace solo abre en esta computadora.
+                Para usar el teléfono, abre la versión HTTPS publicada en Vercel
+                y conecta ambos equipos a la misma Wi-Fi.
               </p>
             )}
             {state.paired && (
@@ -154,14 +199,16 @@ export default function PhoneReaderButton() {
               </p>
             )}
             <div className="phone-reader-actions">
-              {!state.paired && (!state.url || state.pairUntil <= now) && (
+              {!state.paired && (
                 <button
                   type="button"
                   className="purchase-button purchase-button-primary"
                   disabled={state.linking}
                   onClick={() => void desktopScanner.link()}
                 >
-                  Generar QR
+                  {state.url && state.expiresAt > now
+                    ? "Reintentar conexión"
+                    : "Generar nuevo enlace y QR"}
                 </button>
               )}
               {(state.url || state.paired) && (

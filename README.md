@@ -2,7 +2,7 @@
 
 Aplicación React + TypeScript para inventario, compras y ventas. Incluye pagos QR, híbridos y efectivo, recepción de notificaciones por MacroDroid y funciones para Vercel y Netlify.
 
-También permite [usar el teléfono como lector de barras](docs/lector-telefono.md) en ventas y compras: la laptop muestra un QR, el teléfono abre la cámara y cada lectura selecciona el producto en la operación abierta.
+También permite [usar el teléfono como lector de barras](docs/lector-telefono.md) en ventas y compras: la computadora muestra un QR y un enlace reutilizables durante 8 horas. El teléfono se conecta mediante PeerJS, sin Redis ni variables de entorno para el lector, y cada lectura selecciona el producto en la operación abierta.
 
 ## Ejecutar y verificar
 
