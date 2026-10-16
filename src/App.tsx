@@ -20,6 +20,7 @@ import {
 import type { SalePaymentDraft } from "./data/payments"
 import PaymentNotifications from "./features/payments/PaymentNotifications"
 import { getPaymentListener } from "./features/payments/PaymentWebhookListener"
+import { desktopScanner } from "./features/scanner/DesktopScanner"
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [active, setActive] = useState("Inicio")
@@ -31,7 +32,10 @@ export default function App() {
   useEffect(() => {
     const listener = getPaymentListener()
     if (isAuthenticated) listener.start()
-    return () => listener.stop()
+    return () => {
+      listener.stop()
+      void desktopScanner.disconnect()
+    }
   }, [isAuthenticated])
   async function sell(
     draft: SaleDraftRow[],

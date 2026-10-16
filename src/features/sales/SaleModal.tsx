@@ -10,6 +10,9 @@ import { tiposPago, type SalePaymentDraft } from "../../data/payments"
 import { useSalePayment } from "../payments/useSalePayment"
 import ModalShell from "../purchases/ModalShell"
 import { createBarcodeScanner } from "../purchases/barcodeScanner"
+import PhoneReaderButton, {
+  useRemoteScanner,
+} from "../scanner/PhoneReaderButton"
 import {
   matchesProductCode,
   prioritizedProducts,
@@ -78,6 +81,36 @@ export default function SaleModal({
   )
 
   const scanHandler = useRef((_value: string) => {})
+  useRemoteScanner(
+    "sale",
+    step === 1 && !payment.processing,
+    codeInput,
+    (scan) => {
+      const match = resolveProductCode(inventario, scan.code)
+      const product = catalog.find((item) => item.id === match?.id)
+      scanHandler.current(scan.code)
+      if (!product)
+        return {
+          ...scan,
+          outcome: "unknown",
+          message: "Código no encontrado: " + scan.code,
+        }
+      if (!product.stockVendible)
+        return {
+          ...scan,
+          outcome: "no-stock",
+          message: product.nombre + ": sin stock vendible.",
+        }
+      const existing = draft.some((row) => row.productoId === product.id)
+      return {
+        ...scan,
+        outcome: existing ? "already-selected" : "selected",
+        message:
+          product.nombre +
+          (existing ? " ya estaba seleccionado." : " seleccionado."),
+      }
+    },
+  )
   scanHandler.current = (value) => {
     setCode("")
     const match = resolveProductCode(inventario, value)
@@ -201,6 +234,7 @@ export default function SaleModal({
         >
           {step === 1 ? (
             <>
+              <PhoneReaderButton />
               <div className="sale-filters">
                 <label className="purchase-field" htmlFor="sale-code">
                   <span>Código</span>

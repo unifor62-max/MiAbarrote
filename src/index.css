@@ -638,3 +638,22 @@ button:disabled {
   .adjustment-table tr { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .adjustment-table td[data-label="Vencimiento"] { grid-column: 1 / span 2; }
 }
+
+/* Phone-to-laptop reader */
+.phone-reader-trigger { margin: 0 0 16px; }
+.phone-reader-inline { display: block; color: #38674f; margin: 0 0 12px; font-size: 13px; }
+.phone-pairing { display: grid; justify-items: center; gap: 14px; text-align: center; }
+.phone-pairing img { max-width: 100%; height: auto; background: white; border-radius: 12px; }
+.phone-reader-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.phone-reader-page { min-height: 100dvh; background: #f8faf4; color: #084c38; padding: 28px 18px; }
+.phone-reader-page > header, .phone-reader-card { max-width: 540px; margin: 0 auto; }
+.phone-reader-page h1 { font-size: 30px; font-weight: 750; margin: 10px 0; }
+.phone-reader-page p { line-height: 1.6; margin-bottom: 14px; }
+.phone-reader-card { background: white; border: 1px solid #d4dfd6; border-radius: 24px; padding: 20px; margin-top: 22px; }
+.phone-reader-state { padding: 12px 14px; border-radius: 12px; background: #fff1df; margin-bottom: 16px; line-height: 1.5; }
+.phone-reader-state.is-ready { background: #eaf5df; }
+.phone-camera { position: relative; background: #10251c; aspect-ratio: 4 / 3; border-radius: 16px; overflow: hidden; margin-bottom: 18px; }
+.phone-camera video { width: 100%; height: 100%; object-fit: cover; }
+.phone-camera > span { position: absolute; inset: 0; display: grid; place-items: center; color: #dce9dc; pointer-events: none; }
+.phone-last-code { overflow-wrap: anywhere; margin-top: 16px; }
+@media (max-width: 480px) { .phone-reader-actions > button { width: 100%; } .phone-reader-card { padding: 16px; } }

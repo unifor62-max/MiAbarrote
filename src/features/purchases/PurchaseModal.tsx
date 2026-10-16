@@ -2,6 +2,9 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react"
 import ModalShell from "./ModalShell"
 import Icon from "../../components/Icon"
 import { createBarcodeScanner } from "./barcodeScanner"
+import PhoneReaderButton, {
+  useRemoteScanner,
+} from "../scanner/PhoneReaderButton"
 import { matchesProductCode, prioritizedProducts } from "./productSelection"
 import {
   almacenes,
@@ -119,6 +122,27 @@ export default function PurchaseModal({
     setError("")
   }
   const scanHandler = useRef((_value: string, _previous: PurchaseDraft) => {})
+  useRemoteScanner("purchase", step === 1 && !pending, codeInput, (scan) => {
+    const selected = resolveProductCode(current.current.state, scan.code)
+    const previous = current.current.draft
+    scanHandler.current(scan.code, previous)
+    if (!selected)
+      return {
+        ...scan,
+        outcome: "unknown",
+        message: "Código no encontrado: " + scan.code,
+      }
+    const existing = previous.items.some(
+      (item) => item.productoId === String(selected.id),
+    )
+    return {
+      ...scan,
+      outcome: existing ? "already-selected" : "selected",
+      message:
+        selected.nombre +
+        (existing ? " ya estaba seleccionado." : " seleccionado."),
+    }
+  })
   scanHandler.current = (value, previous) => {
     setCode("")
     const selected = resolveProductCode(current.current.state, value)
@@ -281,6 +305,7 @@ export default function PurchaseModal({
       <form onSubmit={submit} noValidate>
         {step === 1 ? (
           <>
+            <PhoneReaderButton />
             <div className="purchase-scanner-row">
               <label className="purchase-field" htmlFor={id + "-code"}>
                 <span>Código</span>
