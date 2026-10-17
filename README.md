@@ -8,6 +8,8 @@ También permite [usar el teléfono como lector de barras](docs/lector-telefono.
 
 Requiere Node.js 22.12 o superior dentro de la rama 22.
 
+El proyecto usa npm y `package-lock.json` como único archivo de dependencias bloqueadas. Usa npm también al agregar paquetes. No añadas `pnpm-lock.yaml` ni `yarn.lock`: Vercel puede elegir esos gestores al instalar las funciones de `/api`, aunque el frontend use `npm ci`.
+
 ```sh
 npm ci
 npm run dev
