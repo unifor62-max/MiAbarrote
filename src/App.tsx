@@ -120,6 +120,23 @@ export default function App() {
         />
       )}
       <div className="lg:pl-64">
+        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-[#dfe6dc] bg-[#f8faf4]/95 px-5 py-3 backdrop-blur-sm lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMenuOpen(true)}
+            aria-label="Abrir menú"
+            aria-expanded={menuOpen}
+            aria-controls="app-sidebar"
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#d8e3d4] bg-white px-3 text-sm font-semibold text-[#06452f] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#488f02]"
+          >
+            <Icon name="menu" />
+            <span>Menú</span>
+          </button>
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-[#06452f]">MiAbarrote</p>
+            <p className="truncate text-xs text-[#617367]">{active}</p>
+          </div>
+        </header>
         <main className="mx-auto max-w-[1500px] p-5 md:p-8">
           {active === "Inicio" ? (
             <Dashboard onNavigate={navigate} />
