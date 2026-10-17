@@ -1,4 +1,10 @@
-export type ScannerKind = "sale" | "purchase"
+export type ScannerKind = "sale" | "purchase" | "product" | "package"
+export const scannerLabels: Record<ScannerKind, string> = {
+  sale: "venta",
+  purchase: "compra",
+  product: "registro de producto · código individual",
+  package: "registro de producto · código de paquete",
+}
 export interface ScannerTarget {
   id: string
   kind: ScannerKind
@@ -62,7 +68,10 @@ export function validTarget(value: unknown): value is ScannerTarget | null {
   if (value === null) return true
   if (!value || typeof value !== "object") return false
   const item = value as ScannerTarget
-  return validScannerId(item.id) && ["sale", "purchase"].includes(item.kind)
+  return (
+    validScannerId(item.id) &&
+    ["sale", "purchase", "product", "package"].includes(item.kind)
+  )
 }
 export function validResult(value: unknown): value is ScannerResult {
   if (!validScan(value)) return false

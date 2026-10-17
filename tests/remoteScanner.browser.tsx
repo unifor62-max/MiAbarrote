@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client"
 import { BrowserQRCodeReader } from "@zxing/browser"
 import SaleModal from "../src/features/sales/SaleModal"
 import PurchaseModal from "../src/features/purchases/PurchaseModal"
+import CatalogModal from "../src/features/purchases/CatalogModal"
+import { appendProduct } from "../src/data/purchases"
 import PhoneReaderPage from "../src/features/scanner/PhoneReaderPage"
 import { PhoneScanner } from "../src/features/scanner/PhoneScanner"
 import {
@@ -36,7 +38,8 @@ state.inventario.lotes.forEach((item) => {
   if (item.productoId === empty.id) item.stock_actual = 0
 })
 function Fixture() {
-  const [kind, setKind] = useState<"sale" | "purchase" | "phone" | null>(null)
+  const [kind, setKind] =
+    useState<"sale" | "purchase" | "product" | "phone" | null>(null)
   return (
     <>
       <button id="open-sale" onClick={() => setKind("sale")}>
@@ -48,6 +51,23 @@ function Fixture() {
       <button id="open-phone" onClick={() => setKind("phone")}>
         Teléfono
       </button>
+      <button id="open-product" onClick={() => setKind("product")}>
+        Nuevo producto
+      </button>
+      {kind === "product" && (
+        <CatalogModal
+          kind="product"
+          state={state.inventario}
+          onClose={() => setKind(null)}
+          onName={() => {
+            throw Error("Categoría accidental")
+          }}
+          onProduct={(draft) => {
+            state.inventario = appendProduct(state.inventario, draft)
+            setKind(null)
+          }}
+        />
+      )}
       {kind === "sale" && (
         <SaleModal
           inventario={state.inventario}
@@ -190,9 +210,8 @@ async function run() {
       await until(() => document.querySelector('img[alt^="QR"]'))
       const image = document.querySelector<HTMLImageElement>('img[alt^="QR"]')!
       await until(() => image.complete)
-      link = (
-        await new BrowserQRCodeReader().decodeFromImageElement(image)
-      ).getText()
+      link = (await new BrowserQRCodeReader().decodeFromImageElement(image))
+        .getText()
       assert(
         new URL(link).hash.includes("token=") && !new URL(link).search,
         "Secreto solo en fragmento",
@@ -341,6 +360,141 @@ async function run() {
         ": pausa, contexto obsoleto rechazado, cantidades y enlace conservados",
     )
   }
+  await click(document.getElementById("open-product")!)
+  await until(
+    () =>
+      phone.getSnapshot().accepting && phone.getSnapshot().kind === "product",
+  )
+  assert(
+    desktopScanner.getSnapshot().url === link,
+    "Registro reutiliza el teléfono de Ventas y Compras",
+  )
+  const catalogInput = (suffix: string) =>
+    document.querySelector<HTMLInputElement>(`dialog input[id$='-${suffix}']`)!
+  const beforeRegistration = state.inventario.productos.length
+  await fill(document.querySelector<HTMLSelectElement>("dialog select")!, "1")
+  await fill(catalogInput("name"), "Nuevo producto escaneado")
+  await fill(catalogInput("unit"), "2,50")
+  assert(
+    (await send("0012345678905")).outcome === "selected",
+    "Acepta código nuevo que no existe en catálogo",
+  )
+  assert(
+    catalogInput("barcode").value === "0012345678905",
+    "Código individual conserva ceros",
+  )
+  assert(
+    state.inventario.productos.length === beforeRegistration,
+    "Escaneo no guarda automáticamente",
+  )
+  assert(
+    catalogInput("name").value === "Nuevo producto escaneado",
+    "Conserva nombre al escanear",
+  )
+  assert(
+    (await send(first.codigo_barra)).outcome === "unknown",
+    "Detecta código registrado",
+  )
+  assert(button("Guardar").disabled, "No permite guardar duplicado")
+  await send("0012345678905")
+  await click(
+    document.querySelector<HTMLInputElement>(
+      'input[aria-label="Activar código paquete"]',
+    )!,
+  )
+  await click(button("Escanear código paquete"))
+  await until(
+    () =>
+      phone.getSnapshot().kind === "package" && phone.getSnapshot().accepting,
+  )
+  assert(
+    (await send("0098765432105")).outcome === "selected",
+    "Acepta paquete remoto",
+  )
+  assert(
+    catalogInput("package-code").value === "0098765432105",
+    "Paquete va a su campo",
+  )
+  assert(
+    catalogInput("barcode").value === "0012345678905",
+    "Paquete no reemplaza código individual",
+  )
+  await click(button("Usar teléfono como lector"))
+  await until(() => !phone.getSnapshot().accepting)
+  await click(button("Continuar"))
+  await until(
+    () =>
+      phone.getSnapshot().kind === "package" && phone.getSnapshot().accepting,
+  )
+  await click(
+    document.querySelector<HTMLInputElement>(
+      'input[aria-label="Activar código paquete"]',
+    )!,
+  )
+  await until(
+    () =>
+      phone.getSnapshot().kind === "product" && phone.getSnapshot().accepting,
+  )
+  assert(
+    catalogInput("package-code").value === "",
+    "Desactivar paquete limpia y devuelve destino al producto",
+  )
+  await click(button("Escanear código producto"))
+  catalogInput("name").focus()
+  let time = performance.now()
+  for (const key of [..."0077777777777", "Enter"]) {
+    const event = new KeyboardEvent("keydown", {
+      key,
+      bubbles: true,
+      cancelable: true,
+    })
+    Object.defineProperty(event, "timeStamp", { value: (time += 10) })
+    catalogInput("name").dispatchEvent(event)
+    if (key !== "Enter")
+      await fill(catalogInput("name"), catalogInput("name").value + key)
+    else assert(event.defaultPrevented, "Lector físico impide envío accidental")
+  }
+  await delay()
+  assert(
+    catalogInput("barcode").value === "0077777777777",
+    "Lector físico captura código con foco en Nombre",
+  )
+  assert(
+    catalogInput("name").value === "Nuevo producto escaneado",
+    "Lector físico restaura nombre",
+  )
+  assert(!button("Guardar").disabled, "Producto listo para guardar")
+  await click(button("Guardar"))
+  await until(() => !phone.getSnapshot().accepting)
+  assert(
+    state.inventario.productos.length === beforeRegistration + 1,
+    "Guarda exactamente un producto",
+  )
+  assert(
+    state.inventario.productos.at(-1)!.codigo_barra === "0077777777777",
+    "Guarda código escaneado",
+  )
+  assert(
+    desktopScanner.getSnapshot().paired &&
+      desktopScanner.getSnapshot().url === link,
+    "Guardar mantiene vínculo",
+  )
+  await click(document.getElementById("open-product")!)
+  await until(
+    () =>
+      phone.getSnapshot().kind === "product" && phone.getSnapshot().accepting,
+  )
+  assert(catalogInput("barcode").value === "", "Siguiente registro abre vacío")
+  await click(button("Cancelar"))
+  await until(() => !phone.getSnapshot().accepting)
+  await click(document.getElementById("open-sale")!)
+  await until(
+    () => phone.getSnapshot().kind === "sale" && phone.getSnapshot().accepting,
+  )
+  await click(button("Cancelar"))
+  report(
+    "Registro: teléfono vinculado, códigos nuevos y duplicados, paquete, pausa, lector físico, guardado único y regreso a Ventas",
+  )
   phone.stop()
   desktopScanner.stop()
   await desktopScanner.resume()

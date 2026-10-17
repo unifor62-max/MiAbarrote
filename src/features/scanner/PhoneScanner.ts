@@ -1,6 +1,7 @@
 import type { DataConnection, Peer } from "peerjs"
 import {
   phoneStorageKey,
+  scannerLabels,
   validCredentials,
   validScannerCode,
   validResult,
@@ -202,8 +203,7 @@ export class PhoneScanner {
             ? "Lector pausado. Abre la selección de productos en la computadora."
             : !changed && this.state.result
               ? this.state.result.message
-              : "Listo para escanear en " +
-                (this.target.kind === "sale" ? "venta" : "compra"),
+              : "Listo para escanear en " + scannerLabels[this.target.kind],
       })
       if (this.pending) this.sendPending()
     } else if (message.type === "result" && validResult(message.result)) {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { PhoneScanner } from "./PhoneScanner"
 import type { IScannerControls } from "@zxing/browser"
+import { scannerLabels } from "../../data/remoteScanner"
 
 export default function PhoneReaderPage() {
   const [reader] = useState(() => new PhoneScanner(window.localStorage))
@@ -105,8 +106,7 @@ export default function PhoneReaderPage() {
       <section className="phone-reader-card">
         {state.kind && (
           <p className="phone-reader-operation">
-            Escaneando para {state.kind === "sale" ? "venta" : "compra"} en la
-            computadora
+            Escaneando para {scannerLabels[state.kind]} en la computadora
           </p>
         )}
         <div

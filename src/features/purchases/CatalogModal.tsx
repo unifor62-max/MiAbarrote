@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useId,
   useRef,
   useState,
@@ -12,6 +13,18 @@ import {
   type PurchaseState,
 } from "../../data/purchases"
 import ModalShell from "./ModalShell"
+import PhoneReaderButton, {
+  useRemoteScanner,
+} from "../scanner/PhoneReaderButton"
+import { validScannerCode } from "../../data/remoteScanner"
+import { createBarcodeScanner } from "./barcodeScanner"
+type CodeField = "codigoBarra" | "codigoPaquete"
+interface CatalogScanSnapshot {
+  draft: ProductDraft
+  field: HTMLInputElement | HTMLSelectElement | null
+  value: string
+  target: CodeField
+}
 export type CatalogModalKind = "product" | "category"
 const titles = { product: "Nuevo producto", category: "Nueva categoría" }
 
@@ -30,6 +43,7 @@ export default function CatalogModal({
 }) {
   const id = useId()
   const submitting = useRef(false)
+  const codeInput = useRef<HTMLInputElement>(null)
   const packageCodeInput = useRef<HTMLInputElement>(null)
   const nameInput = useRef<HTMLInputElement>(null)
   const [draft, setDraft] = useState<ProductDraft>({
@@ -44,6 +58,11 @@ export default function CatalogModal({
     precioPaquete: "",
   })
   const [error, setError] = useState("")
+  const [scanNotice, setScanNotice] = useState("")
+  const [scanTarget, setScanTarget] = useState<CodeField>("codigoBarra")
+  const scanner = useRef(createBarcodeScanner<CatalogScanSnapshot>())
+  const current = useRef({ draft, scanTarget })
+  current.current = { draft, scanTarget }
   const isProduct = kind === "product"
   const individualCode = draft.codigoBarra.trim()
   const packageCode = draft.codigoPaqueteActivo
@@ -64,14 +83,115 @@ export default function CatalogModal({
     ? !!prepareProduct(state, draft)
     : !!draft.nombre.trim() && draft.nombre.trim().length <= 120
 
+  function receiveCode(
+    value: string,
+    field: CodeField,
+    previous: ProductDraft,
+  ) {
+    const code = value.trim()
+    if (!validScannerCode(code)) {
+      setError("El código leído no es válido. Vuelve a escanear.")
+      return false
+    }
+    if (field === "codigoPaquete" && !previous.codigoPaqueteActivo) return false
+    const other =
+      field === "codigoBarra"
+        ? previous.codigoPaqueteActivo
+          ? previous.codigoPaquete?.trim()
+          : ""
+        : previous.codigoBarra.trim()
+    const duplicate =
+      other === code ||
+      [...state.productos, ...state.paquetes].some(
+        (item) => item.codigo_barra === code,
+      )
+    setDraft({ ...previous, [field]: code })
+    setError("")
+    setScanNotice(
+      duplicate
+        ? ""
+        : `Código ${
+            field === "codigoBarra" ? "del producto" : "del paquete"
+          } leído: ${code}. Completa los datos y pulsa Guardar.`,
+    )
+    return !duplicate
+  }
+  useRemoteScanner(
+    scanTarget === "codigoPaquete" ? "package" : "product",
+    isProduct,
+    codeInput,
+    (scan) => {
+      const accepted = receiveCode(
+        scan.code,
+        current.current.scanTarget,
+        current.current.draft,
+      )
+      return {
+        ...scan,
+        outcome: accepted ? "selected" : "unknown",
+        message: accepted
+          ? "Código recibido. Completa el producto en la computadora y pulsa Guardar."
+          : "Código inválido o ya asignado. Revisa el formulario en la computadora.",
+      }
+    },
+  )
+  const receive = useRef(receiveCode)
+  receive.current = receiveCode
+  useEffect(() => {
+    if (!isProduct) return
+    const reader = scanner.current
+    function keydown(event: globalThis.KeyboardEvent) {
+      const own = codeInput.current?.closest("dialog")
+      const dialogs = document.querySelectorAll("dialog[open]")
+      if (
+        document.visibilityState !== "visible" ||
+        dialogs[dialogs.length - 1] !== own ||
+        event.target === codeInput.current ||
+        event.target === packageCodeInput.current
+      ) {
+        reader.clear()
+        return
+      }
+      const result = reader.feed(event, () => {
+        const field =
+          event.target instanceof HTMLInputElement ||
+          event.target instanceof HTMLSelectElement
+            ? event.target
+            : null
+        return {
+          draft: current.current.draft,
+          field,
+          value: field?.value ?? "",
+          target: current.current.scanTarget,
+        }
+      })
+      if (!result) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (result.snapshot.field?.isConnected)
+        result.snapshot.field.value = result.snapshot.value
+      receive.current(
+        result.code,
+        result.snapshot.target,
+        result.snapshot.draft,
+      )
+    }
+    window.addEventListener("keydown", keydown, true)
+    return () => {
+      window.removeEventListener("keydown", keydown, true)
+      reader.clear()
+    }
+  }, [isProduct, scanTarget])
   function update(key: keyof ProductDraft, value: string) {
     setDraft((previous) => ({ ...previous, [key]: value }))
     setError("")
+    setScanNotice("")
   }
   function toggle(
     key: "codigoPaqueteActivo" | "precioPaqueteActivo",
     checked: boolean,
   ) {
+    if (key === "codigoPaqueteActivo" && !checked) setScanTarget("codigoBarra")
     setDraft((previous) => ({
       ...previous,
       [key]: checked,
@@ -82,6 +202,7 @@ export default function CatalogModal({
         : {}),
     }))
     setError("")
+    setScanNotice("")
   }
   function scanEnter(
     event: KeyboardEvent<HTMLInputElement>,
@@ -92,7 +213,7 @@ export default function CatalogModal({
     event.preventDefault()
     event.stopPropagation()
     if (field === "codigoPaquete" && !draft.codigoPaqueteActivo) return
-    update(field, event.currentTarget.value)
+    receiveCode(event.currentTarget.value, field, draft)
     if (field === "codigoBarra" && draft.codigoPaqueteActivo)
       packageCodeInput.current?.focus()
     else nameInput.current?.focus()
@@ -127,6 +248,52 @@ export default function CatalogModal({
       onClose={onClose}
     >
       <form onSubmit={submit}>
+        {isProduct && (
+          <div className="catalog-scanner">
+            <PhoneReaderButton />
+            <div
+              className="catalog-scan-target"
+              role="group"
+              aria-label="Destino del código escaneado"
+            >
+              <button
+                type="button"
+                className="purchase-button purchase-button-secondary"
+                aria-pressed={scanTarget === "codigoBarra"}
+                onClick={() => {
+                  setScanTarget("codigoBarra")
+                  codeInput.current?.focus()
+                }}
+              >
+                Escanear código producto
+              </button>
+              <button
+                type="button"
+                className="purchase-button purchase-button-secondary"
+                aria-pressed={scanTarget === "codigoPaquete"}
+                disabled={!draft.codigoPaqueteActivo}
+                onClick={() => {
+                  setScanTarget("codigoPaquete")
+                  packageCodeInput.current?.focus()
+                }}
+              >
+                Escanear código paquete
+              </button>
+            </div>
+            <p className="catalog-hint">
+              Escanea con tu teléfono o lector de barras. El código se coloca en{" "}
+              {scanTarget === "codigoBarra"
+                ? "Código producto"
+                : "Código paquete"}
+              . Activa Código paquete para registrar también su envase.
+            </p>
+            {scanNotice && (
+              <p className="purchase-scan-notice" role="status">
+                {scanNotice}
+              </p>
+            )}
+          </div>
+        )}
         <div className="catalog-fields">
           {isProduct && (
             <>
@@ -152,7 +319,12 @@ export default function CatalogModal({
                 <label className="purchase-field" htmlFor={id + "-barcode"}>
                   <span>Código producto</span>
                   <input
+                    ref={codeInput}
                     id={id + "-barcode"}
+                    onFocus={(event) => {
+                      setScanTarget("codigoBarra")
+                      event.currentTarget.select()
+                    }}
                     required
                     autoComplete="off"
                     maxLength={128}
@@ -178,6 +350,10 @@ export default function CatalogModal({
                   </div>
                   <input
                     ref={packageCodeInput}
+                    onFocus={(event) => {
+                      setScanTarget("codigoPaquete")
+                      event.currentTarget.select()
+                    }}
                     id={id + "-package-code"}
                     autoComplete="off"
                     maxLength={128}
